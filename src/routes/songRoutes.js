@@ -11,6 +11,12 @@ const {
   "../controllers/songController"
 );
 
+const {
+  optionalAuthMiddleware,
+} = require(
+  "../middleware/authMiddleware"
+);
+
 
 const router =
   express.Router();
@@ -18,20 +24,34 @@ const router =
 
 /* ========================================
    GET ALL SONGS
+
+   Logged-in USER:
+   Only preferred-language songs
+
+   Public user:
+   Existing all-songs behavior
 ======================================== */
 
 router.get(
   "/",
+  optionalAuthMiddleware,
   getAllSongs
 );
 
 
 /* ========================================
    SEARCH
+
+   Logged-in USER:
+   Search only preferred-language songs
+
+   Public user:
+   Existing search behavior
 ======================================== */
 
 router.get(
   "/search",
+  optionalAuthMiddleware,
   searchSongs
 );
 
@@ -39,12 +59,16 @@ router.get(
 /* ========================================
    GET AVAILABLE MOODS
 
-   Example:
-   GET /api/songs/moods
+   Logged-in USER:
+   Mood counts for preferred language
+
+   Public user:
+   Existing mood behavior
 ======================================== */
 
 router.get(
   "/moods",
+  optionalAuthMiddleware,
   getAvailableMoods
 );
 
@@ -67,6 +91,7 @@ router.get(
 
 router.get(
   "/mood/:mood",
+  optionalAuthMiddleware,
   getSongsByMood
 );
 
@@ -76,13 +101,20 @@ router.get(
 
    IMPORTANT:
    Keep this LAST
+
+   Logged-in USER:
+   Cannot access a song from another
+   language.
+
+   Public user:
+   Existing behavior.
 ======================================== */
 
 router.get(
   "/:id",
+  optionalAuthMiddleware,
   getSongById
 );
 
 
-module.exports =
-  router;
+module.exports = router;

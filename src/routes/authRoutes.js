@@ -1,10 +1,19 @@
-
 const express = require("express");
 
 const {
   register,
   login,
   adminLogin,
+
+  ownerLogin,
+  ownerForgotPassword,
+  ownerVerifyOTP,
+  ownerResetPassword,
+
+  adminForgotPassword,
+  adminVerifyOTP,
+  adminResetPassword,
+
   getMe,
 } = require("../controllers/authController");
 
@@ -14,28 +23,91 @@ const {
 
 const router = express.Router();
 
-// ==========================================
-// NORMAL USER
-// ==========================================
 
-router.post("/register", register);
+/* =========================================================
+   USER AUTHENTICATION
+========================================================= */
 
-router.post("/login", login);
+router.post(
+  "/register",
+  register
+);
+
+router.post(
+  "/login",
+  login
+);
 
 
-// ==========================================
-// ADMIN
-// ==========================================
+/* =========================================================
+   ADMIN AUTHENTICATION
+========================================================= */
 
-router.post("/admin/login", adminLogin);
+router.post(
+  "/admin/login",
+  adminLogin
+);
 
 
-// ==========================================
-// CURRENT USER / ADMIN
-// ==========================================
+/* =========================================================
+   ADMIN FORGOT PASSWORD
+========================================================= */
 
-router.get("/me", authMiddleware, getMe);
+router.post(
+  "/admin/forgot-password",
+  adminForgotPassword
+);
+
+router.post(
+  "/admin/verify-otp",
+  adminVerifyOTP
+);
+
+router.post(
+  "/admin/reset-password",
+  adminResetPassword
+);
+
+
+/* =========================================================
+   BUSINESS OWNER AUTHENTICATION
+========================================================= */
+
+router.post(
+  "/owner/login",
+  ownerLogin
+);
+
+
+/* =========================================================
+   BUSINESS OWNER FORGOT PASSWORD
+========================================================= */
+
+router.post(
+  "/owner/forgot-password",
+  ownerForgotPassword
+);
+
+router.post(
+  "/owner/verify-otp",
+  ownerVerifyOTP
+);
+
+router.post(
+  "/owner/reset-password",
+  ownerResetPassword
+);
+
+
+/* =========================================================
+   CURRENT USER
+========================================================= */
+
+router.get(
+  "/me",
+  authMiddleware,
+  getMe
+);
 
 
 module.exports = router;
-

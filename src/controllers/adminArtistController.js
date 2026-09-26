@@ -1,40 +1,55 @@
-const pool =
-  require("../config/db");
+const pool = require("../config/db");
+
+
+/* =========================================================
+   SUPPORTED LANGUAGES
+========================================================= */
+
+const ALLOWED_LANGUAGES = [
+  "Telugu",
+  "Hindi",
+  "English",
+  "Malayalam",
+  "Kannada",
+  "Tamil",
+];
 
 
 /* =========================================================
    GET ALL ARTISTS
 ========================================================= */
 
-const getArtists = async (
-  req,
-  res
-) => {
+const getArtists = async (req, res) => {
 
   try {
 
-    const result =
-      await pool.query(`
-        SELECT
-          a.id,
-          a.name,
-          a.bio,
-          a.image_url,
-          a.created_at,
+    const result = await pool.query(`
+      SELECT
+        a.id,
+        a.name,
+        a.bio,
+        a.image_url,
+        a.language,
+        a.created_at,
 
-          COUNT(s.id)::integer
-            AS song_count
+        COUNT(s.id)::integer AS song_count
 
-        FROM artists a
+      FROM artists a
 
-        LEFT JOIN songs s
-          ON s.artist_id = a.id
+      LEFT JOIN songs s
+        ON s.artist_id = a.id
 
-        GROUP BY a.id
+      GROUP BY
+        a.id,
+        a.name,
+        a.bio,
+        a.image_url,
+        a.language,
+        a.created_at
 
-        ORDER BY
-          a.name ASC
-      `);
+      ORDER BY
+        a.name ASC
+    `);
 
 
     return res.status(200).json({
@@ -76,18 +91,20 @@ const getArtists = async (
    CREATE ARTIST
 ========================================================= */
 
-const createArtist = async (
-  req,
-  res
-) => {
+const createArtist = async (req, res) => {
 
   try {
 
     const {
       name,
       bio,
+      language,
     } = req.body;
 
+
+    /* -----------------------------------------------------
+       VALIDATE NAME
+    ----------------------------------------------------- */
 
     if (
       !name ||
@@ -106,23 +123,45 @@ const createArtist = async (
     }
 
 
-    /*
-     * If user selected an image:
-     *
-     * req.file.filename
-     *
-     * Example:
-     * 1758450000-john.jpg
-     *
-     * Database:
-     * /images/1758450000-john.jpg
-     */
+    /* -----------------------------------------------------
+       LANGUAGE
+    ----------------------------------------------------- */
+
+    const artistLanguage =
+      language?.trim() || "Telugu";
+
+
+    if (
+      !ALLOWED_LANGUAGES.includes(
+        artistLanguage
+      )
+    ) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        message:
+          "Invalid artist language",
+
+      });
+
+    }
+
+
+    /* -----------------------------------------------------
+       IMAGE
+    ----------------------------------------------------- */
 
     const image_url =
       req.file
         ? `/images/${req.file.filename}`
         : null;
 
+
+    /* -----------------------------------------------------
+       INSERT
+    ----------------------------------------------------- */
 
     const result =
       await pool.query(
@@ -131,14 +170,16 @@ const createArtist = async (
         (
           name,
           bio,
-          image_url
+          image_url,
+          language
         )
 
         VALUES
         (
           $1,
           $2,
-          $3
+          $3,
+          $4
         )
 
         RETURNING *
@@ -150,6 +191,8 @@ const createArtist = async (
             null,
 
           image_url,
+
+          artistLanguage,
         ]
       );
 
@@ -193,10 +236,7 @@ const createArtist = async (
    UPDATE ARTIST
 ========================================================= */
 
-const updateArtist = async (
-  req,
-  res
-) => {
+const updateArtist = async (req, res) => {
 
   try {
 
@@ -208,8 +248,13 @@ const updateArtist = async (
     const {
       name,
       bio,
+      language,
     } = req.body;
 
+
+    /* -----------------------------------------------------
+       VALIDATE NAME
+    ----------------------------------------------------- */
 
     if (
       !name ||
@@ -228,9 +273,35 @@ const updateArtist = async (
     }
 
 
-    /*
-     * Get existing artist
-     */
+    /* -----------------------------------------------------
+       LANGUAGE
+    ----------------------------------------------------- */
+
+    const artistLanguage =
+      language?.trim() || "Telugu";
+
+
+    if (
+      !ALLOWED_LANGUAGES.includes(
+        artistLanguage
+      )
+    ) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        message:
+          "Invalid artist language",
+
+      });
+
+    }
+
+
+    /* -----------------------------------------------------
+       GET EXISTING ARTIST
+    ----------------------------------------------------- */
 
     const existing =
       await pool.query(
@@ -263,19 +334,19 @@ const updateArtist = async (
     }
 
 
-    /*
-     * If new image uploaded:
-     * use new image.
-     *
-     * If no new image:
-     * keep existing image.
-     */
+    /* -----------------------------------------------------
+       IMAGE
+    ----------------------------------------------------- */
 
     const image_url =
       req.file
         ? `/images/${req.file.filename}`
         : existing.rows[0].image_url;
 
+
+    /* -----------------------------------------------------
+       UPDATE
+    ----------------------------------------------------- */
 
     const result =
       await pool.query(
@@ -285,9 +356,10 @@ const updateArtist = async (
         SET
           name = $1,
           bio = $2,
-          image_url = $3
+          image_url = $3,
+          language = $4
 
-        WHERE id = $4
+        WHERE id = $5
 
         RETURNING *
         `,
@@ -298,6 +370,8 @@ const updateArtist = async (
             null,
 
           image_url,
+
+          artistLanguage,
 
           id,
         ]
@@ -343,10 +417,7 @@ const updateArtist = async (
    DELETE ARTIST
 ========================================================= */
 
-const deleteArtist = async (
-  req,
-  res
-) => {
+const deleteArtist = async (req, res) => {
 
   try {
 
@@ -355,16 +426,15 @@ const deleteArtist = async (
     } = req.params;
 
 
-    /*
-     * Check whether songs use artist
-     */
+    /* -----------------------------------------------------
+       CHECK SONGS
+    ----------------------------------------------------- */
 
     const songResult =
       await pool.query(
         `
         SELECT
-          COUNT(*)::integer
-            AS count
+          COUNT(*)::integer AS count
 
         FROM songs
 
@@ -390,6 +460,10 @@ const deleteArtist = async (
 
     }
 
+
+    /* -----------------------------------------------------
+       DELETE ARTIST
+    ----------------------------------------------------- */
 
     const result =
       await pool.query(

@@ -1,657 +1,739 @@
-const express =
-  require("express");
+// =========================================================
+// server.js
+// KEERTHANA - Backend Server
+// =========================================================
 
-const cors =
-  require("cors");
+require("dotenv").config();
 
-const dotenv =
-  require("dotenv");
+const express = require("express");
+const cors = require("cors");
+const path = require("path");
+const fs = require("fs");
 
-const path =
-  require("path");
+// =========================================================
+// DATABASE
+// =========================================================
 
+const pool = require("./config/db");
 
-/* ========================================
-   ENVIRONMENT VARIABLES
-======================================== */
+// =========================================================
+// ROUTES
+// =========================================================
 
-dotenv.config();
+const authRoutes = require("./routes/authRoutes");
+const ownerRoutes = require("./routes/ownerRoutes");
+const songRoutes = require("./routes/songRoutes");
+const likedSongRoutes = require("./routes/likedSongRoutes");
+const playlistRoutes = require("./routes/playlistRoutes");
+const artistRoutes = require("./routes/artistRoutes");
+const albumRoutes = require("./routes/albumRoutes");
+const categoryRoutes = require("./routes/categoryRoutes");
+const ministryRoutes = require("./routes/ministryRoutes");
+const historyRoutes = require("./routes/historyRoutes");
+const subscriptionRoutes = require("./routes/subscriptionRoutes");
+const paymentRoutes = require("./routes/paymentRoutes");
+const aiRoutes = require("./routes/aiRoutes");
+const statisticsRoutes = require("./routes/statisticsRoutes");
 
+// =========================================================
+// ADMIN ROUTES
+// =========================================================
 
-/* ========================================
-   DATABASE
-======================================== */
+const adminRoutes = require("./routes/adminRoutes");
+const adminSongRoutes = require("./routes/adminSongRoutes");
+const adminArtistRoutes = require("./routes/adminArtistRoutes");
+const adminAlbumRoutes = require("./routes/adminAlbumRoutes");
+const adminCategoryRoutes = require("./routes/adminCategoryRoutes");
+const adminUserRoutes = require("./routes/adminUserRoutes");
+const adminMinistryRoutes = require("./routes/adminMinistryRoutes");
 
-const pool =
-  require("./config/db");
+// =========================================================
+// EXPRESS APP
+// =========================================================
 
+const app = express();
 
-/* ========================================
-   PUBLIC ROUTES
-======================================== */
+// =========================================================
+// PORT
+// =========================================================
 
-const songRoutes =
-  require("./routes/songRoutes");
+const PORT = process.env.PORT || 5000;
 
-const authRoutes =
-  require("./routes/authRoutes");
-
-const likedSongRoutes =
-  require("./routes/likedSongRoutes");
-
-const playlistRoutes =
-  require("./routes/playlistRoutes");
-
-const artistRoutes =
-  require("./routes/artistRoutes");
-
-const albumRoutes =
-  require("./routes/albumRoutes");
-
-/*
-  NEW:
-  Public categories route
-*/
-
-const categoryRoutes =
-  require("./routes/adminCategoryRoutes");
-
-const historyRoutes =
-  require("./routes/historyRoutes");
-
-
-/* ========================================
-   ADMIN ROUTES
-======================================== */
-
-const adminRoutes =
-  require("./routes/adminRoutes");
-
-const adminSongRoutes =
-  require("./routes/adminSongRoutes");
-
-const adminArtistRoutes =
-  require("./routes/adminArtistRoutes");
-
-const adminAlbumRoutes =
-  require("./routes/adminAlbumRoutes");
-
-const adminCategoryRoutes =
-  require("./routes/adminCategoryRoutes");
-
-const adminUserRoutes =
-  require("./routes/adminUserRoutes");
-
-
-/* ========================================
-   SUBSCRIPTION / PAYMENT ROUTES
-======================================== */
-
-const subscriptionRoutes =
-  require("./routes/subscriptionRoutes");
-
-const paymentRoutes =
-  require("./routes/paymentRoutes");
-
-
-/* ========================================
-   WEBHOOK ROUTES
-======================================== */
-
-const webhookRoutes =
-
-  require("./routes/webhookRoutes");
-
-
-  const aiRoutes = require("./routes/aiRoutes");
-
-  const statisticsRoutes = require("./routes/statisticsRoutes");
-
-/* ========================================
-   EXPRESS APP
-======================================== */
-
-const app =
-  express();
-
-
-/* ========================================
-   CORS
-======================================== */
+// =========================================================
+// CORS
+// =========================================================
 
 app.use(
   cors({
-    origin:
+    origin: [
       "http://localhost:5173",
-
-    credentials:
-      true,
+      "http://127.0.0.1:5173",
+    ],
+    credentials: true,
   })
 );
 
-
-/* =========================================================
-   RAZORPAY WEBHOOK
-
-   IMPORTANT:
-   This MUST be mounted BEFORE express.json().
-
-   webhookRoutes uses express.raw()
-   for Razorpay signature verification.
-========================================================= */
+// =========================================================
+// BODY PARSER
+// =========================================================
 
 app.use(
-  "/api/webhooks",
-  webhookRoutes
+  express.json({
+    limit: "50mb",
+  })
 );
-
-
-/* ========================================
-   NORMAL BODY PARSERS
-======================================== */
-
-app.use(
-  express.json()
-);
-
 
 app.use(
   express.urlencoded({
-    extended:
-      true,
+    extended: true,
+    limit: "50mb",
   })
 );
-app.use("/api/ai", aiRoutes);
 
-/* ========================================
-   STATIC MEDIA
-======================================== */
+// =========================================================
+// REQUEST LOGGER
+// =========================================================
 
-const publicPath =
-  path.join(
-    __dirname,
-    "../public"
-  );
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.originalUrl}`);
+  next();
+});
 
+// =========================================================
+// STATIC FILES
+// =========================================================
 
-console.log(
-  "Public folder:",
-  publicPath
-);
-
+// ---------------------------------------------------------
+// UPLOADS
+// backend/src/uploads
+// ---------------------------------------------------------
 
 app.use(
-  "/media",
+  "/uploads",
   express.static(
-    publicPath
+    path.join(__dirname, "uploads")
   )
 );
 
+// =========================================================
+// AUDIO FILES
+// =========================================================
+//
+// server.js:
+// backend/src/server.js
+//
+// Audio folder:
+// backend/public/audio
+//
+// Therefore:
+// __dirname = backend/src
+//
+// Correct audio path:
+// backend/src/../public/audio
+//
+// Browser URL:
+// http://localhost:5000/media/audio/file.mp3
+// =========================================================
 
-/* ========================================
-   HOME
-======================================== */
-
-app.get(
-  "/",
-
-  (req, res) => {
-
-    res
-      .status(200)
-      .json({
-
-        success:
-          true,
-
-        app:
-          "KEERTHANA",
-
-        message:
-          "Welcome to KEERTHANA Christian Music API",
-
-      });
-
-  }
+const audioPath = path.join(
+  __dirname,
+  "..",
+  "public",
+  "audio"
 );
 
+console.log(
+  "========================================"
+);
 
-/* ========================================
-   HEALTH CHECK
-======================================== */
+console.log(
+  "AUDIO FOLDER:",
+  audioPath
+);
+
+console.log(
+  "AUDIO FOLDER EXISTS:",
+  fs.existsSync(audioPath)
+);
+
+console.log(
+  "========================================"
+);
+
+// =========================================================
+// AUDIO ROUTE
+// =========================================================
 
 app.get(
-  "/api/health",
-
-  async (
-    req,
-    res
-  ) => {
+  "/media/audio/:filename",
+  (req, res) => {
 
     try {
 
-      await pool.query(
-        "SELECT 1"
+      const filename =
+        req.params.filename;
+
+      // Prevent path traversal
+      const safeFilename =
+        path.basename(filename);
+
+      const filePath =
+        path.join(
+          audioPath,
+          safeFilename
+        );
+
+      console.log(
+        "========================================"
       );
 
+      console.log(
+        "AUDIO REQUEST:",
+        filename
+      );
 
-      return res
-        .status(200)
-        .json({
+      console.log(
+        "AUDIO FILE PATH:",
+        filePath
+      );
 
-          success:
-            true,
+      console.log(
+        "AUDIO FILE EXISTS:",
+        fs.existsSync(filePath)
+      );
 
-          app:
-            "KEERTHANA",
+      console.log(
+        "========================================"
+      );
 
-          server:
-            "online",
+      // ---------------------------------------------------
+      // FILE NOT FOUND
+      // ---------------------------------------------------
 
-          database:
-            "connected",
+      if (
+        !fs.existsSync(filePath)
+      ) {
 
+        return res.status(404).json({
+          success: false,
+          message: "Audio file not found",
+          filename: safeFilename,
+          filePath: filePath,
         });
+
+      }
+
+      // ---------------------------------------------------
+      // FILE INFORMATION
+      // ---------------------------------------------------
+
+      const stat =
+        fs.statSync(filePath);
+
+      if (!stat.isFile()) {
+
+        return res.status(404).json({
+          success: false,
+          message: "Audio path is not a file",
+          filename: safeFilename,
+        });
+
+      }
+
+      // ---------------------------------------------------
+      // AUDIO HEADERS
+      // ---------------------------------------------------
+
+      res.setHeader(
+        "Content-Type",
+        "audio/mpeg"
+      );
+
+      res.setHeader(
+        "Accept-Ranges",
+        "bytes"
+      );
+
+      res.setHeader(
+        "Content-Length",
+        stat.size
+      );
+
+      res.setHeader(
+        "Cache-Control",
+        "public, max-age=3600"
+      );
+
+      // ---------------------------------------------------
+      // STREAM AUDIO
+      // ---------------------------------------------------
+
+      const stream =
+        fs.createReadStream(
+          filePath
+        );
+
+      stream.on(
+        "error",
+        (error) => {
+
+          console.error(
+            "AUDIO STREAM ERROR:",
+            error
+          );
+
+          if (
+            !res.headersSent
+          ) {
+
+            res.status(500).json({
+              success: false,
+              message:
+                "Audio streaming failed",
+            });
+
+          }
+
+        }
+      );
+
+      stream.pipe(res);
 
     } catch (error) {
 
       console.error(
-        "Database health error:",
+        "AUDIO ROUTE ERROR:",
         error
       );
 
+      if (
+        !res.headersSent
+      ) {
 
-      return res
-        .status(500)
-        .json({
-
-          success:
-            false,
-
-          app:
-            "KEERTHANA",
-
-          server:
-            "online",
-
-          database:
-            "disconnected",
-
+        res.status(500).json({
+          success: false,
+          message:
+            "Audio server error",
+          error:
+            error.message,
         });
+
+      }
 
     }
 
   }
 );
 
-
-/* ========================================
-   PUBLIC API ROUTES
-======================================== */
-
-
-/* SONGS */
+// =========================================================
+// PUBLIC FILES
+// =========================================================
+//
+// backend/public
+//
+// Browser:
+// http://localhost:5000/public/...
+// =========================================================
 
 app.use(
-  "/api/songs",
-  songRoutes
+  "/public",
+  express.static(
+    path.join(
+      __dirname,
+      "..",
+      "public"
+    )
+  )
 );
 
+// =========================================================
+// ASSETS
+// =========================================================
 
-/* AUTH */
+app.use(
+  "/assets",
+  express.static(
+    path.join(
+      __dirname,
+      "assets"
+    )
+  )
+);
+
+// =========================================================
+// HEALTH CHECK
+// =========================================================
+
+app.get(
+  "/",
+  (req, res) => {
+
+    res.json({
+      success: true,
+      message:
+        "KEERTHANA API server is running",
+      port: PORT,
+    });
+
+  }
+);
+
+// =========================================================
+// API HEALTH CHECK
+// =========================================================
+
+app.get(
+  "/api",
+  (req, res) => {
+
+    res.json({
+      success: true,
+      message:
+        "KEERTHANA API is working",
+    });
+
+  }
+);
+
+// =========================================================
+// AUTH ROUTES
+// =========================================================
 
 app.use(
   "/api/auth",
   authRoutes
 );
 
+// =========================================================
+// BUSINESS OWNER ROUTES
+// =========================================================
 
-/* LIKED SONGS */
+app.use(
+  "/api/owner",
+  ownerRoutes
+);
+
+// =========================================================
+// PUBLIC SONG ROUTES
+// =========================================================
+
+app.use(
+  "/api/songs",
+  songRoutes
+);
+
+// =========================================================
+// LIKED SONG ROUTES
+// =========================================================
 
 app.use(
   "/api/liked-songs",
   likedSongRoutes
 );
 
-
-/* PLAYLISTS */
+// =========================================================
+// PLAYLIST ROUTES
+// =========================================================
 
 app.use(
   "/api/playlists",
   playlistRoutes
 );
 
-
-/* ARTISTS */
+// =========================================================
+// ARTIST ROUTES
+// =========================================================
 
 app.use(
   "/api/artists",
   artistRoutes
 );
 
-
-/* ALBUMS */
+// =========================================================
+// ALBUM ROUTES
+// =========================================================
 
 app.use(
   "/api/albums",
   albumRoutes
 );
 
-
-/* ========================================
-   CATEGORIES
-
-   NEW PUBLIC ENDPOINT:
-
-   GET /api/categories
-======================================== */
+// =========================================================
+// CATEGORY ROUTES
+// =========================================================
 
 app.use(
   "/api/categories",
   categoryRoutes
 );
 
+// =========================================================
+// MINISTRY ROUTES
+// =========================================================
 
-/* HISTORY */
+app.use(
+  "/api/ministries",
+  ministryRoutes
+);
+
+// =========================================================
+// HISTORY ROUTES
+// =========================================================
 
 app.use(
   "/api/history",
   historyRoutes
 );
 
-
-/* ========================================
-   SUBSCRIPTIONS
-======================================== */
+// =========================================================
+// SUBSCRIPTION ROUTES
+// =========================================================
 
 app.use(
   "/api/subscriptions",
   subscriptionRoutes
 );
 
-
-/* ========================================
-   PAYMENTS
-======================================== */
+// =========================================================
+// PAYMENT ROUTES
+// =========================================================
 
 app.use(
   "/api/payments",
   paymentRoutes
 );
 
+// =========================================================
+// AI ROUTES
+// =========================================================
 
-/* ========================================
-   ADMIN API ROUTES
-======================================== */
+app.use(
+  "/api/ai",
+  aiRoutes
+);
 
+// =========================================================
+// STATISTICS ROUTES
+// =========================================================
 
-/* ADMIN DASHBOARD */
+app.use(
+  "/api/statistics",
+  statisticsRoutes
+);
+
+// =========================================================
+// ADMIN ROUTES
+// =========================================================
 
 app.use(
   "/api/admin",
   adminRoutes
 );
 
-
-/* ADMIN SONGS */
+// =========================================================
+// ADMIN SONG ROUTES
+// =========================================================
 
 app.use(
   "/api/admin/songs",
   adminSongRoutes
 );
 
-
-/* ADMIN ARTISTS */
+// =========================================================
+// ADMIN ARTIST ROUTES
+// =========================================================
 
 app.use(
   "/api/admin/artists",
   adminArtistRoutes
 );
 
-
-/* ADMIN ALBUMS */
+// =========================================================
+// ADMIN ALBUM ROUTES
+// =========================================================
 
 app.use(
   "/api/admin/albums",
   adminAlbumRoutes
 );
 
-
-/* ADMIN CATEGORIES */
+// =========================================================
+// ADMIN CATEGORY ROUTES
+// =========================================================
 
 app.use(
   "/api/admin/categories",
   adminCategoryRoutes
 );
 
-
-/* ADMIN USERS */
+// =========================================================
+// ADMIN USER ROUTES
+// =========================================================
 
 app.use(
   "/api/admin/users",
   adminUserRoutes
 );
 
-app.use("/api/statistics", statisticsRoutes);
-/* ========================================
-   404 HANDLER
-
-   ALL API ROUTES MUST BE ABOVE THIS.
-======================================== */
+// =========================================================
+// ADMIN MINISTRY ROUTES
+// =========================================================
 
 app.use(
-  (
-    req,
-    res
-  ) => {
+  "/api/admin/ministries",
+  adminMinistryRoutes
+);
 
-    return res
-      .status(404)
-      .json({
+// =========================================================
+// 404 HANDLER
+// =========================================================
 
-        success:
-          false,
+app.use(
+  (req, res) => {
 
-        message:
-          "API route not found",
+    console.log(
+      "404 - API route not found:",
+      req.originalUrl
+    );
 
-        method:
-          req.method,
-
-        path:
-          req.originalUrl,
-
-      });
+    res.status(404).json({
+      success: false,
+      message:
+        "API route not found",
+      path:
+        req.originalUrl,
+    });
 
   }
 );
 
-
-/* ========================================
-   GLOBAL ERROR HANDLER
-======================================== */
+// =========================================================
+// GLOBAL ERROR HANDLER
+// =========================================================
 
 app.use(
-  (
-    error,
-    req,
-    res,
-    next
-  ) => {
+  (err, req, res, next) => {
 
     console.error(
-      "Server error:",
+      "GLOBAL SERVER ERROR:",
+      err
+    );
+
+    res.status(
+      err.status || 500
+    ).json({
+      success: false,
+      message:
+        err.message ||
+        "Internal server error",
+    });
+
+  }
+);
+
+// =========================================================
+// DATABASE CONNECTION TEST
+// =========================================================
+
+async function testDatabase() {
+
+  try {
+
+    const result =
+      await pool.query(
+        "SELECT NOW()"
+      );
+
+    console.log(
+      "========================================"
+    );
+
+    console.log(
+      "PostgreSQL connected successfully"
+    );
+
+    console.log(
+      "Database time:",
+      result.rows[0].now
+    );
+
+    console.log(
+      "========================================"
+    );
+
+  } catch (error) {
+
+    console.error(
+      "PostgreSQL connection failed:"
+    );
+
+    console.error(
+      error.message
+    );
+
+  }
+
+}
+
+// =========================================================
+// START SERVER
+// =========================================================
+
+async function startServer() {
+
+  try {
+
+    await testDatabase();
+
+    app.listen(
+      PORT,
+      () => {
+
+        console.log(
+          "========================================"
+        );
+
+        console.log(
+          "KEERTHANA BACKEND SERVER STARTED"
+        );
+
+        console.log(
+          `Server: http://localhost:${PORT}`
+        );
+
+        console.log(
+          `API: http://localhost:${PORT}/api`
+        );
+
+        console.log(
+          `Audio: http://localhost:${PORT}/media/audio`
+        );
+
+        console.log(
+          "========================================"
+        );
+
+      }
+    );
+
+  } catch (error) {
+
+    console.error(
+      "Failed to start server:"
+    );
+
+    console.error(
       error
     );
 
-
-    return res
-      .status(500)
-      .json({
-
-        success:
-          false,
-
-        message:
-          "Internal server error",
-
-      });
+    process.exit(1);
 
   }
-);
 
+}
 
-/* ========================================
-   SERVER PORT
-======================================== */
+// =========================================================
+// START
+// =========================================================
 
-const PORT =
-  process.env.PORT ||
-  5000;
-
-
-/* ========================================
-   START SERVER
-======================================== */
-
-app.listen(
-  PORT,
-
-  () => {
-
-    console.log("");
-
-    console.log(
-      "=========================================="
-    );
-
-    console.log(
-      "          🎵 KEERTHANA API 🎵"
-    );
-
-    console.log(
-      "=========================================="
-    );
-
-
-    console.log(
-      `Server: http://localhost:${PORT}`
-    );
-
-    console.log(
-      `Health: http://localhost:${PORT}/api/health`
-    );
-
-
-    console.log(
-      "------------------------------------------"
-    );
-
-    console.log(
-      "PUBLIC"
-    );
-
-
-    console.log(
-      `Songs: http://localhost:${PORT}/api/songs`
-    );
-
-    console.log(
-      `Artists: http://localhost:${PORT}/api/artists`
-    );
-
-    console.log(
-      `Albums: http://localhost:${PORT}/api/albums`
-    );
-
-    console.log(
-      `Categories: http://localhost:${PORT}/api/categories`
-    );
-
-
-    console.log(
-      "------------------------------------------"
-    );
-
-    console.log(
-      "ADMIN"
-    );
-
-
-    console.log(
-      `Dashboard: http://localhost:${PORT}/api/admin/dashboard`
-    );
-
-    console.log(
-      `Admin Songs: http://localhost:${PORT}/api/admin/songs`
-    );
-
-    console.log(
-      `Admin Artists: http://localhost:${PORT}/api/admin/artists`
-    );
-
-    console.log(
-      `Admin Albums: http://localhost:${PORT}/api/admin/albums`
-    );
-
-    console.log(
-      `Admin Categories: http://localhost:${PORT}/api/admin/categories`
-    );
-
-    console.log(
-      `Admin Users: http://localhost:${PORT}/api/admin/users`
-    );
-
-
-    console.log(
-      "------------------------------------------"
-    );
-
-    console.log(
-      "AUTH"
-    );
-
-
-    console.log(
-      `Register: POST http://localhost:${PORT}/api/auth/register`
-    );
-
-    console.log(
-      `Login: POST http://localhost:${PORT}/api/auth/login`
-    );
-
-    console.log(
-      `Profile: GET http://localhost:${PORT}/api/auth/me`
-    );
-
-
-    console.log(
-      "------------------------------------------"
-    );
-
-    console.log(
-      "PAYMENTS"
-    );
-
-
-    console.log(
-      `Payments: http://localhost:${PORT}/api/payments`
-    );
-
-    console.log(
-      `Subscriptions: http://localhost:${PORT}/api/subscriptions`
-    );
-
-    console.log(
-      `Razorpay Webhook: POST http://localhost:${PORT}/api/webhooks/razorpay`
-    );
-
-
-    console.log(
-      "=========================================="
-    );
-
-    console.log("");
-
-  }
-);
+startServer();

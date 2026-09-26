@@ -3,6 +3,20 @@ const pool =
 
 
 /* =========================================================
+   ALLOWED LANGUAGES
+========================================================= */
+
+const ALLOWED_LANGUAGES = [
+  "Telugu",
+  "Hindi",
+  "English",
+  "Malayalam",
+  "Kannada",
+  "Tamil",
+];
+
+
+/* =========================================================
    GET ALL CATEGORIES
 ========================================================= */
 
@@ -18,6 +32,7 @@ const getCategories = async (
         SELECT
           c.id,
           c.name,
+          c.language,
           c.created_at,
 
           COUNT(s.id)::integer
@@ -29,7 +44,10 @@ const getCategories = async (
           ON s.category_id = c.id
 
         GROUP BY
-          c.id
+          c.id,
+          c.name,
+          c.language,
+          c.created_at
 
         ORDER BY
           c.name ASC
@@ -84,8 +102,13 @@ const createCategory = async (
 
     const {
       name,
+      language,
     } = req.body;
 
+
+    /* =====================================================
+       NAME VALIDATION
+    ===================================================== */
 
     if (
       !name ||
@@ -108,19 +131,64 @@ const createCategory = async (
       name.trim();
 
 
-    /* CHECK DUPLICATE */
+    /* =====================================================
+       LANGUAGE
+    ===================================================== */
+
+    const categoryLanguage =
+      language?.trim() ||
+      "Telugu";
+
+
+    if (
+      !ALLOWED_LANGUAGES.includes(
+        categoryLanguage
+      )
+    ) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        message:
+          "Invalid category language",
+
+      });
+
+    }
+
+
+    /* =====================================================
+       CHECK DUPLICATE
+       
+       Same category name is allowed in different
+       languages.
+
+       Example:
+       Worship + Telugu
+       Worship + Hindi
+
+       Both can exist.
+    ===================================================== */
 
     const existing =
       await pool.query(
         `
-        SELECT id
+        SELECT
+          id
 
         FROM categories
 
-        WHERE LOWER(name) =
-              LOWER($1)
+        WHERE
+          LOWER(name) =
+            LOWER($1)
+
+          AND language = $2
         `,
-        [cleanName]
+        [
+          cleanName,
+          categoryLanguage,
+        ]
       );
 
 
@@ -133,31 +201,38 @@ const createCategory = async (
         success: false,
 
         message:
-          "Category already exists",
+          "Category already exists in this language",
 
       });
 
     }
 
 
-    /* INSERT */
+    /* =====================================================
+       INSERT
+    ===================================================== */
 
     const result =
       await pool.query(
         `
         INSERT INTO categories
         (
-          name
+          name,
+          language
         )
 
         VALUES
         (
-          $1
+          $1,
+          $2
         )
 
         RETURNING *
         `,
-        [cleanName]
+        [
+          cleanName,
+          categoryLanguage,
+        ]
       );
 
 
@@ -214,8 +289,13 @@ const updateCategory = async (
 
     const {
       name,
+      language,
     } = req.body;
 
+
+    /* =====================================================
+       NAME VALIDATION
+    ===================================================== */
 
     if (
       !name ||
@@ -238,12 +318,42 @@ const updateCategory = async (
       name.trim();
 
 
-    /* CHECK DUPLICATE */
+    /* =====================================================
+       LANGUAGE
+    ===================================================== */
+
+    const categoryLanguage =
+      language?.trim() ||
+      "Telugu";
+
+
+    if (
+      !ALLOWED_LANGUAGES.includes(
+        categoryLanguage
+      )
+    ) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        message:
+          "Invalid category language",
+
+      });
+
+    }
+
+
+    /* =====================================================
+       CHECK DUPLICATE
+    ===================================================== */
 
     const existing =
       await pool.query(
         `
-        SELECT id
+        SELECT
+          id
 
         FROM categories
 
@@ -251,10 +361,13 @@ const updateCategory = async (
           LOWER(name) =
             LOWER($1)
 
-          AND id <> $2
+          AND language = $2
+
+          AND id <> $3
         `,
         [
           cleanName,
+          categoryLanguage,
           id,
         ]
       );
@@ -269,12 +382,16 @@ const updateCategory = async (
         success: false,
 
         message:
-          "Another category already uses this name",
+          "Another category already uses this name in this language",
 
       });
 
     }
 
+
+    /* =====================================================
+       UPDATE
+    ===================================================== */
 
     const result =
       await pool.query(
@@ -282,14 +399,16 @@ const updateCategory = async (
         UPDATE categories
 
         SET
-          name = $1
+          name = $1,
+          language = $2
 
-        WHERE id = $2
+        WHERE id = $3
 
         RETURNING *
         `,
         [
           cleanName,
+          categoryLanguage,
           id,
         ]
       );
@@ -362,7 +481,9 @@ const deleteCategory = async (
     } = req.params;
 
 
-    /* CHECK IF SONGS USE CATEGORY */
+    /* =====================================================
+       CHECK IF SONGS USE CATEGORY
+    ===================================================== */
 
     const songs =
       await pool.query(
@@ -394,6 +515,10 @@ const deleteCategory = async (
 
     }
 
+
+    /* =====================================================
+       DELETE
+    ===================================================== */
 
     const result =
       await pool.query(
