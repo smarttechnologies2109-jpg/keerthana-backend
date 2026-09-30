@@ -1,3 +1,4 @@
+
 // =========================================================
 // server.js
 // KEERTHANA - Backend Server
@@ -48,6 +49,18 @@ const adminUserRoutes = require("./routes/adminUserRoutes");
 const adminMinistryRoutes = require("./routes/adminMinistryRoutes");
 
 // =========================================================
+// SONG REPORT ROUTES
+// =========================================================
+
+const songReportRoutes = require("./routes/songReportRoutes");
+
+// =========================================================
+// NOTIFICATION ROUTES
+// =========================================================
+
+const notificationRoutes = require("./routes/notificationRoutes");
+
+// =========================================================
 // EXPRESS APP
 // =========================================================
 
@@ -95,7 +108,10 @@ app.use(
 // =========================================================
 
 app.use((req, res, next) => {
-  console.log(`${req.method} ${req.originalUrl}`);
+  console.log(
+    `${req.method} ${req.originalUrl}`
+  );
+
   next();
 });
 
@@ -124,12 +140,6 @@ app.use(
 //
 // Audio folder:
 // backend/public/audio
-//
-// Therefore:
-// __dirname = backend/src
-//
-// Correct audio path:
-// backend/src/../public/audio
 //
 // Browser URL:
 // http://localhost:5000/media/audio/file.mp3
@@ -167,9 +177,7 @@ console.log(
 app.get(
   "/media/audio/:filename",
   (req, res) => {
-
     try {
-
       const filename =
         req.params.filename;
 
@@ -213,14 +221,13 @@ app.get(
       if (
         !fs.existsSync(filePath)
       ) {
-
         return res.status(404).json({
           success: false,
-          message: "Audio file not found",
+          message:
+            "Audio file not found",
           filename: safeFilename,
           filePath: filePath,
         });
-
       }
 
       // ---------------------------------------------------
@@ -231,13 +238,12 @@ app.get(
         fs.statSync(filePath);
 
       if (!stat.isFile()) {
-
         return res.status(404).json({
           success: false,
-          message: "Audio path is not a file",
+          message:
+            "Audio path is not a file",
           filename: safeFilename,
         });
-
       }
 
       // ---------------------------------------------------
@@ -276,63 +282,42 @@ app.get(
       stream.on(
         "error",
         (error) => {
-
           console.error(
             "AUDIO STREAM ERROR:",
             error
           );
 
-          if (
-            !res.headersSent
-          ) {
-
+          if (!res.headersSent) {
             res.status(500).json({
               success: false,
               message:
                 "Audio streaming failed",
             });
-
           }
-
         }
       );
 
       stream.pipe(res);
-
     } catch (error) {
-
       console.error(
         "AUDIO ROUTE ERROR:",
         error
       );
 
-      if (
-        !res.headersSent
-      ) {
-
+      if (!res.headersSent) {
         res.status(500).json({
           success: false,
           message:
             "Audio server error",
-          error:
-            error.message,
+          error: error.message,
         });
-
       }
-
     }
-
   }
 );
 
 // =========================================================
 // PUBLIC FILES
-// =========================================================
-//
-// backend/public
-//
-// Browser:
-// http://localhost:5000/public/...
 // =========================================================
 
 app.use(
@@ -367,14 +352,12 @@ app.use(
 app.get(
   "/",
   (req, res) => {
-
     res.json({
       success: true,
       message:
         "KEERTHANA API server is running",
       port: PORT,
     });
-
   }
 );
 
@@ -385,13 +368,11 @@ app.get(
 app.get(
   "/api",
   (req, res) => {
-
     res.json({
       success: true,
       message:
         "KEERTHANA API is working",
     });
-
   }
 );
 
@@ -533,6 +514,17 @@ app.use(
 // =========================================================
 // ADMIN SONG ROUTES
 // =========================================================
+//
+// Includes:
+// GET    /api/admin/songs
+// GET    /api/admin/songs/:id
+// POST   /api/admin/songs
+// PUT    /api/admin/songs/:id
+// DELETE /api/admin/songs/:id
+//
+// Reports:
+// GET    /api/admin/songs/reports
+// =========================================================
 
 app.use(
   "/api/admin/songs",
@@ -585,12 +577,36 @@ app.use(
 );
 
 // =========================================================
+// SONG REPORT ROUTES
+// =========================================================
+//
+// User:
+// POST /api/song-reports
+//
+// Admin reports are handled through:
+// GET /api/admin/songs/reports
+// =========================================================
+
+app.use(
+  "/api/song-reports",
+  songReportRoutes
+);
+
+// =========================================================
+// NOTIFICATION ROUTES
+// =========================================================
+
+app.use(
+  "/api/notifications",
+  notificationRoutes
+);
+
+// =========================================================
 // 404 HANDLER
 // =========================================================
 
 app.use(
   (req, res) => {
-
     console.log(
       "404 - API route not found:",
       req.originalUrl
@@ -603,7 +619,6 @@ app.use(
       path:
         req.originalUrl,
     });
-
   }
 );
 
@@ -613,7 +628,6 @@ app.use(
 
 app.use(
   (err, req, res, next) => {
-
     console.error(
       "GLOBAL SERVER ERROR:",
       err
@@ -627,7 +641,6 @@ app.use(
         err.message ||
         "Internal server error",
     });
-
   }
 );
 
@@ -636,9 +649,7 @@ app.use(
 // =========================================================
 
 async function testDatabase() {
-
   try {
-
     const result =
       await pool.query(
         "SELECT NOW()"
@@ -660,9 +671,7 @@ async function testDatabase() {
     console.log(
       "========================================"
     );
-
   } catch (error) {
-
     console.error(
       "PostgreSQL connection failed:"
     );
@@ -670,9 +679,7 @@ async function testDatabase() {
     console.error(
       error.message
     );
-
   }
-
 }
 
 // =========================================================
@@ -680,15 +687,12 @@ async function testDatabase() {
 // =========================================================
 
 async function startServer() {
-
   try {
-
     await testDatabase();
 
     app.listen(
       PORT,
       () => {
-
         console.log(
           "========================================"
         );
@@ -712,12 +716,9 @@ async function startServer() {
         console.log(
           "========================================"
         );
-
       }
     );
-
   } catch (error) {
-
     console.error(
       "Failed to start server:"
     );
@@ -727,9 +728,7 @@ async function startServer() {
     );
 
     process.exit(1);
-
   }
-
 }
 
 // =========================================================
@@ -737,3 +736,4 @@ async function startServer() {
 // =========================================================
 
 startServer();
+

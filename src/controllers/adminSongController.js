@@ -1,3 +1,4 @@
+
 const pool = require("../config/db");
 
 const fs = require("fs");
@@ -89,10 +90,23 @@ const createSong = async (req, res) => {
       featured,
     } = req.body;
 
-console.log("========== CREATE SONG BODY ==========");
-console.log(req.body);
-console.log("MINISTRY ID RECEIVED:", ministry_id);
-console.log("======================================");
+
+    console.log(
+      "========== CREATE SONG BODY =========="
+    );
+
+    console.log(req.body);
+
+    console.log(
+      "MINISTRY ID RECEIVED:",
+      ministry_id
+    );
+
+    console.log(
+      "======================================"
+    );
+
+
     /* =====================================================
        VALIDATE TITLE
     ===================================================== */
@@ -109,12 +123,14 @@ console.log("======================================");
        AUDIO FILE
     ===================================================== */
 
-    const audioFile = req.files?.audio?.[0];
+    const audioFile =
+      req.files?.audio?.[0];
 
     if (!audioFile) {
       return res.status(400).json({
         success: false,
-        message: "Please upload an audio file",
+        message:
+          "Please upload an audio file",
       });
     }
 
@@ -123,7 +139,8 @@ console.log("======================================");
        COVER FILE
     ===================================================== */
 
-    const coverFile = req.files?.cover?.[0];
+    const coverFile =
+      req.files?.cover?.[0];
 
 
     /* =====================================================
@@ -159,12 +176,16 @@ console.log("======================================");
       ministry_id !== null &&
       ministry_id !== ""
     ) {
-      ministryId = Number(ministry_id);
+      ministryId =
+        Number(ministry_id);
 
-      if (!Number.isInteger(ministryId)) {
+      if (
+        !Number.isInteger(ministryId)
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Invalid ministry",
+          message:
+            "Invalid ministry",
         });
       }
     }
@@ -195,19 +216,23 @@ console.log("======================================");
     ===================================================== */
 
     if (ministryId !== null) {
-      const ministryResult = await pool.query(
-        `
-        SELECT id
-        FROM ministries
-        WHERE id = $1
-        `,
-        [ministryId]
-      );
+      const ministryResult =
+        await pool.query(
+          `
+          SELECT id
+          FROM ministries
+          WHERE id = $1
+          `,
+          [ministryId]
+        );
 
-      if (ministryResult.rows.length === 0) {
+      if (
+        ministryResult.rows.length === 0
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Selected ministry does not exist",
+          message:
+            "Selected ministry does not exist",
         });
       }
     }
@@ -217,64 +242,68 @@ console.log("======================================");
        INSERT SONG
     ===================================================== */
 
-    const result = await pool.query(
-      `
-      INSERT INTO songs
-      (
-        title,
-        title_english,
-        language,
-        lyrics,
-        audio_url,
-        cover_url,
-        artist_id,
-        album_id,
-        category_id,
-        featured,
-        ministry_id
-      )
+    const result =
+      await pool.query(
+        `
+        INSERT INTO songs
+        (
+          title,
+          title_english,
+          language,
+          lyrics,
+          audio_url,
+          cover_url,
+          artist_id,
+          album_id,
+          category_id,
+          featured,
+          ministry_id
+        )
 
-      VALUES
-      (
-        $1,
-        $2,
-        $3,
-        $4,
-        $5,
-        $6,
-        $7,
-        $8,
-        $9,
-        $10,
-        $11
-      )
+        VALUES
+        (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10,
+          $11
+        )
 
-      RETURNING *
-      `,
-      [
-        title.trim(),
+        RETURNING *
+        `,
+        [
+          title.trim(),
 
-        title_english?.trim() || null,
+          title_english?.trim() ||
+            null,
 
-        language || "Telugu",
+          language ||
+            "Telugu",
 
-        lyrics || null,
+          lyrics ||
+            null,
 
-        audio_url,
+          audio_url,
 
-        cover_url,
+          cover_url,
 
-        artistId,
+          artistId,
 
-        albumId,
+          albumId,
 
-        categoryId,
+          categoryId,
 
-        isFeatured,
+          isFeatured,
 
-        ministryId,
-      ]
-    );
+          ministryId,
+        ]
+      );
 
 
     /* =====================================================
@@ -303,7 +332,9 @@ console.log("======================================");
        FOREIGN KEY ERROR
     ===================================================== */
 
-    if (error.code === "23503") {
+    if (
+      error.code === "23503"
+    ) {
       return res.status(400).json({
         success: false,
         message:
@@ -325,7 +356,9 @@ console.log("======================================");
    DELETE MEDIA FILE
 ========================================================= */
 
-const deleteMediaFile = (mediaUrl) => {
+const deleteMediaFile = (
+  mediaUrl
+) => {
   try {
     if (!mediaUrl) {
       return;
@@ -333,7 +366,9 @@ const deleteMediaFile = (mediaUrl) => {
 
 
     if (
-      !mediaUrl.startsWith("/media/")
+      !mediaUrl.startsWith(
+        "/media/"
+      )
     ) {
       return;
     }
@@ -713,7 +748,9 @@ const updateSong = async (
 
 
       if (
-        !Number.isInteger(ministryId)
+        !Number.isInteger(
+          ministryId
+        )
       ) {
         return res.status(400).json({
           success: false,
@@ -904,6 +941,339 @@ const updateSong = async (
 
 
 /* =========================================================
+   GET ALL SONG REPORTS - ADMIN
+========================================================= */
+
+const getAdminSongReports = async (
+  req,
+  res
+) => {
+  try {
+
+    /* =====================================================
+       GET REPORTS
+    ===================================================== */
+
+    const result =
+      await pool.query(
+        `
+        SELECT
+          sr.id,
+          sr.user_id,
+          sr.song_id,
+          sr.song_title,
+          sr.report_type,
+          sr.message,
+          sr.status,
+          sr.created_at,
+
+          u.name AS user_name,
+          u.email AS user_email
+
+        FROM song_reports sr
+
+        LEFT JOIN users u
+          ON sr.user_id = u.id
+
+        ORDER BY
+          sr.created_at DESC,
+          sr.id DESC
+        `
+      );
+
+
+    /* =====================================================
+       SUCCESS
+    ===================================================== */
+
+    return res.status(200).json({
+      success: true,
+      count: result.rows.length,
+      reports: result.rows,
+    });
+
+
+  } catch (error) {
+
+    console.error(
+      "Admin get song reports error:",
+      error
+    );
+
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Unable to load song reports",
+    });
+  }
+};
+
+/* =========================================================
+   UPDATE SONG REPORT STATUS - ADMIN
+========================================================= */
+
+const updateSongReportStatus = async (
+  req,
+  res
+) => {
+
+  try {
+
+    const {
+      id,
+    } = req.params;
+
+    const {
+      status,
+    } = req.body;
+
+
+    /* -----------------------------------------------------
+       VALIDATE ID
+    ----------------------------------------------------- */
+
+    if (!id) {
+
+      return res.status(400).json({
+        success: false,
+        message:
+          "Report ID is required",
+      });
+
+    }
+
+
+    /* -----------------------------------------------------
+       ALLOWED STATUS
+    ----------------------------------------------------- */
+
+    const allowedStatuses = [
+      "pending",
+      "resolved",
+      "rejected",
+    ];
+
+
+    if (
+      !allowedStatuses.includes(
+        String(status || "")
+          .toLowerCase()
+      )
+    ) {
+
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invalid report status",
+        allowedStatuses,
+      });
+
+    }
+
+
+    const cleanStatus =
+      String(status)
+        .toLowerCase();
+
+
+    /* -----------------------------------------------------
+       UPDATE
+    ----------------------------------------------------- */
+
+    const result =
+      await pool.query(
+        `
+        UPDATE song_reports
+
+        SET status = $1
+
+        WHERE id = $2
+
+        RETURNING
+          id,
+          user_id,
+          song_id,
+          song_title,
+          report_type,
+          message,
+          status,
+          created_at
+        `,
+        [
+          cleanStatus,
+          id,
+        ]
+      );
+
+
+    /* -----------------------------------------------------
+       NOT FOUND
+    ----------------------------------------------------- */
+
+    if (
+      result.rows.length === 0
+    ) {
+
+      return res.status(404).json({
+        success: false,
+        message:
+          "Song report not found",
+      });
+
+    }
+
+
+    /* -----------------------------------------------------
+       SUCCESS
+    ----------------------------------------------------- */
+
+    return res.status(200).json({
+
+      success: true,
+
+      message:
+        "Report status updated successfully",
+
+      report:
+        result.rows[0],
+
+    });
+
+
+  } catch (error) {
+
+    console.error(
+      "Admin update song report status error:",
+      error
+    );
+
+
+    return res.status(500).json({
+
+      success: false,
+
+      message:
+        "Unable to update report status",
+
+    });
+
+  }
+
+};
+
+
+/* =========================================================
+   DELETE SONG REPORT - ADMIN
+========================================================= */
+
+const deleteSongReport = async (
+  req,
+  res
+) => {
+
+  try {
+
+    const {
+      id,
+    } = req.params;
+
+
+    /* -----------------------------------------------------
+       VALIDATE ID
+    ----------------------------------------------------- */
+
+    if (!id) {
+
+      return res.status(400).json({
+        success: false,
+        message:
+          "Report ID is required",
+      });
+
+    }
+
+
+    /* -----------------------------------------------------
+       DELETE
+    ----------------------------------------------------- */
+
+    const result =
+      await pool.query(
+        `
+        DELETE FROM song_reports
+
+        WHERE id = $1
+
+        RETURNING
+          id,
+          song_title,
+          report_type,
+          message,
+          status
+        `,
+        [id]
+      );
+
+
+    /* -----------------------------------------------------
+       NOT FOUND
+    ----------------------------------------------------- */
+
+    if (
+      result.rows.length === 0
+    ) {
+
+      return res.status(404).json({
+        success: false,
+        message:
+          "Song report not found",
+      });
+
+    }
+
+
+    /* -----------------------------------------------------
+       SUCCESS
+    ----------------------------------------------------- */
+
+    return res.status(200).json({
+
+      success: true,
+
+      message:
+        "Song report deleted successfully",
+
+      report:
+        result.rows[0],
+
+    });
+
+
+  } catch (error) {
+
+    console.error(
+      "Admin delete song report error:",
+      error
+    );
+
+
+    return res.status(500).json({
+
+      success: false,
+
+      message:
+        "Unable to delete song report",
+
+    });
+
+  }
+
+};
+
+
+
+/* =========================================================
    EXPORT CONTROLLERS
 ========================================================= */
 
@@ -913,4 +1283,8 @@ module.exports = {
   createSong,
   updateSong,
   deleteSong,
+
+  getAdminSongReports,
+  updateSongReportStatus,
+  deleteSongReport,
 };

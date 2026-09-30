@@ -1,15 +1,20 @@
-const express =
-  require("express");
+
+const express = require("express");
+
 
 const {
   getAllSongs,
   getSongById,
   searchSongs,
   getSongsByMood,
+  browseSongsForMood,
+  addSongToMood,
+  removeSongFromMood,
   getAvailableMoods,
 } = require(
   "../controllers/songController"
 );
+
 
 const {
   optionalAuthMiddleware,
@@ -22,15 +27,9 @@ const router =
   express.Router();
 
 
-/* ========================================
+/* =========================================================
    GET ALL SONGS
-
-   Logged-in USER:
-   Only preferred-language songs
-
-   Public user:
-   Existing all-songs behavior
-======================================== */
+========================================================= */
 
 router.get(
   "/",
@@ -39,15 +38,9 @@ router.get(
 );
 
 
-/* ========================================
-   SEARCH
-
-   Logged-in USER:
-   Search only preferred-language songs
-
-   Public user:
-   Existing search behavior
-======================================== */
+/* =========================================================
+   SEARCH SONGS
+========================================================= */
 
 router.get(
   "/search",
@@ -56,15 +49,9 @@ router.get(
 );
 
 
-/* ========================================
-   GET AVAILABLE MOODS
-
-   Logged-in USER:
-   Mood counts for preferred language
-
-   Public user:
-   Existing mood behavior
-======================================== */
+/* =========================================================
+   AVAILABLE MOODS
+========================================================= */
 
 router.get(
   "/moods",
@@ -73,21 +60,9 @@ router.get(
 );
 
 
-/* ========================================
+/* =========================================================
    GET SONGS BY MOOD
-
-   IMPORTANT:
-   This MUST come before /:id
-
-   Examples:
-
-   /songs/mood/worship
-   /songs/mood/praise
-   /songs/mood/prayer
-   /songs/mood/hope
-   /songs/mood/peace
-   /songs/mood/thanksgiving
-======================================== */
+========================================================= */
 
 router.get(
   "/mood/:mood",
@@ -96,19 +71,65 @@ router.get(
 );
 
 
-/* ========================================
+/* =========================================================
+   BROWSE ALL SONGS FOR A MOOD
+
+   Example:
+
+   /api/songs/mood/worship/browse
+
+========================================================= */
+
+router.get(
+  "/mood/:mood/browse",
+  optionalAuthMiddleware,
+  browseSongsForMood
+);
+
+
+/* =========================================================
+   ADD SONG TO MOOD
+
+   POST
+
+   /api/songs/:id/mood
+
+   Body:
+
+   {
+     "mood": "worship"
+   }
+
+========================================================= */
+
+router.post(
+  "/:id/mood",
+  optionalAuthMiddleware,
+  addSongToMood
+);
+
+
+/* =========================================================
+   REMOVE SONG FROM MOOD
+
+   DELETE
+
+   /api/songs/:id/mood/worship
+
+========================================================= */
+
+router.delete(
+  "/:id/mood/:mood",
+  optionalAuthMiddleware,
+  removeSongFromMood
+);
+
+
+/* =========================================================
    GET ONE SONG
 
-   IMPORTANT:
-   Keep this LAST
-
-   Logged-in USER:
-   Cannot access a song from another
-   language.
-
-   Public user:
-   Existing behavior.
-======================================== */
+   KEEP THIS LAST
+========================================================= */
 
 router.get(
   "/:id",
@@ -118,3 +139,4 @@ router.get(
 
 
 module.exports = router;
+

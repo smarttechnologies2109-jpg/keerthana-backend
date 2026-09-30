@@ -1,6 +1,5 @@
-const express =
-  require("express");
 
+const express = require("express");
 
 const {
   getAdminSongs,
@@ -8,27 +7,21 @@ const {
   createSong,
   updateSong,
   deleteSong,
-} = require(
-  "../controllers/adminSongController"
-);
-
+  getAdminSongReports,
+  updateSongReportStatus,
+  deleteSongReport,
+} = require("../controllers/adminSongController");
 
 const {
   authMiddleware,
   adminOnly,
-} = require(
-  "../middleware/authMiddleware"
+} = require("../middleware/authMiddleware");
+
+const upload = require(
+  "../middleware/uploadMiddleware"
 );
 
-
-const upload =
-  require(
-    "../middleware/uploadMiddleware"
-  );
-
-
-const router =
-  express.Router();
+const router = express.Router();
 
 
 /* =========================================================
@@ -40,6 +33,56 @@ router.get(
   authMiddleware,
   adminOnly,
   getAdminSongs
+);
+
+
+/* =========================================================
+   GET ALL SONG REPORTS - ADMIN
+========================================================= */
+
+router.get(
+  "/reports",
+  authMiddleware,
+  adminOnly,
+  getAdminSongReports
+);
+
+
+/* =========================================================
+   UPDATE SONG REPORT STATUS - ADMIN
+
+   PUT /api/admin/songs/reports/:id
+
+   Body:
+   {
+     "status": "pending"
+   }
+
+   Allowed:
+   pending
+   resolved
+   rejected
+========================================================= */
+
+router.put(
+  "/reports/:id",
+  authMiddleware,
+  adminOnly,
+  updateSongReportStatus
+);
+
+
+/* =========================================================
+   DELETE SONG REPORT - ADMIN
+
+   DELETE /api/admin/songs/reports/:id
+========================================================= */
+
+router.delete(
+  "/reports/:id",
+  authMiddleware,
+  adminOnly,
+  deleteSongReport
 );
 
 
@@ -61,11 +104,8 @@ router.get(
 
 router.post(
   "/",
-
   authMiddleware,
-
   adminOnly,
-
   upload.fields([
     {
       name: "audio",
@@ -76,7 +116,6 @@ router.post(
       maxCount: 1,
     },
   ]),
-
   createSong
 );
 
@@ -87,11 +126,8 @@ router.post(
 
 router.put(
   "/:id",
-
   authMiddleware,
-
   adminOnly,
-
   upload.fields([
     {
       name: "audio",
@@ -102,7 +138,6 @@ router.put(
       maxCount: 1,
     },
   ]),
-
   updateSong
 );
 
@@ -119,5 +154,4 @@ router.delete(
 );
 
 
-module.exports =
-  router;
+module.exports = router;
