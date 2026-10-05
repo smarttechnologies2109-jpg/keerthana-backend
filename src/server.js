@@ -35,6 +35,7 @@ const subscriptionRoutes = require("./routes/subscriptionRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const aiRoutes = require("./routes/aiRoutes");
 const statisticsRoutes = require("./routes/statisticsRoutes");
+const userRoutes = require("./routes/userRoutes");
 
 // =========================================================
 // ADMIN ROUTES
@@ -60,6 +61,9 @@ const songReportRoutes = require("./routes/songReportRoutes");
 
 const notificationRoutes = require("./routes/notificationRoutes");
 
+
+const ownerMusicRoutes =
+  require("./routes/ownerMusicRoutes");
 // =========================================================
 // EXPRESS APP
 // =========================================================
@@ -502,6 +506,15 @@ app.use(
   statisticsRoutes
 );
 
+
+// =========================================================
+// USER PROFILE ROUTES
+// =========================================================
+
+app.use(
+  "/api/users",
+  userRoutes
+);
 // =========================================================
 // ADMIN ROUTES
 // =========================================================
@@ -601,6 +614,11 @@ app.use(
   notificationRoutes
 );
 
+
+app.use(
+  "/api/owner/music",
+  ownerMusicRoutes
+);
 // =========================================================
 // 404 HANDLER
 // =========================================================

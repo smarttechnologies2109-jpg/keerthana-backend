@@ -601,11 +601,57 @@ const deleteOwnerUser = async (req, res) => {
    GET DASHBOARD STATISTICS
 ========================================================= */
 
+/* =========================================================
+   GET OWNER STATISTICS
+   - Overview
+   - Language statistics
+   - Today's uploads
+   - Admin contributions
+   - Calendar statistics
+   - Selected-date statistics
+========================================================= */
+
 const getOwnerStatistics = async (req, res) => {
   try {
-    /* -----------------------------------------------------
+    /*
+      Optional query parameters:
+
+      /owner/statistics
+      /owner/statistics?month=2026-09
+      /owner/statistics?date=2026-09-28
+      /owner/statistics?month=2026-09&date=2026-09-28
+    */
+
+    const requestedMonth = String(
+      req.query.month || ""
+    ).trim();
+
+    const requestedDate = String(
+      req.query.date || ""
+    ).trim();
+
+
+    /* =====================================================
+       DATE VALIDATION
+    ===================================================== */
+
+    const monthPattern = /^\d{4}-\d{2}$/;
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+
+    const validMonth =
+      monthPattern.test(requestedMonth)
+        ? requestedMonth
+        : null;
+
+    const validDate =
+      datePattern.test(requestedDate)
+        ? requestedDate
+        : null;
+
+
+    /* =====================================================
        USERS
-    ----------------------------------------------------- */
+    ===================================================== */
 
     const totalUsersResult = await pool.query(`
       SELECT COUNT(*)::int AS count
@@ -615,20 +661,26 @@ const getOwnerStatistics = async (req, res) => {
     const businessOwnersResult = await pool.query(`
       SELECT COUNT(*)::int AS count
       FROM users
-      WHERE role = 'BUSINESS_OWNER'
+      WHERE UPPER(role) = 'BUSINESS_OWNER'
+    `);
+
+    const adminUsersResult = await pool.query(`
+      SELECT COUNT(*)::int AS count
+      FROM users
+      WHERE UPPER(role) = 'ADMIN'
     `);
 
     const normalUsersResult = await pool.query(`
       SELECT COUNT(*)::int AS count
       FROM users
-      WHERE role IS NULL
-         OR role != 'BUSINESS_OWNER'
+      WHERE LOWER(COALESCE(role, 'user'))
+        NOT IN ('business_owner', 'admin', 'employee')
     `);
 
 
-    /* -----------------------------------------------------
-       MUSIC
-    ----------------------------------------------------- */
+    /* =====================================================
+       MUSIC OVERVIEW
+    ===================================================== */
 
     const totalSongsResult = await pool.query(`
       SELECT COUNT(*)::int AS count
@@ -656,10 +708,656 @@ const getOwnerStatistics = async (req, res) => {
       FROM categories
     `);
 
+/* =====================================================
+   MUSIC COLLECTION BY LANGUAGE
+   - Songs
+   - Albums
+   - Artists
+   - Categories
+   - Ministries
+===================================================== */
 
-    /* -----------------------------------------------------
+const musicLanguageResult = await pool.query(`
+  WITH languages AS (
+    SELECT unnest(
+      ARRAY[
+        'Telugu',
+        'Hindi',
+        'English',
+        'Malayalam',
+        'Kannada',
+        'Tamil'
+      ]
+    ) AS language
+  )
+
+  SELECT
+    l.language,
+
+    (
+      SELECT COUNT(*)::int
+      FROM songs s
+      WHERE LOWER(TRIM(COALESCE(s.language, ''))) =
+            LOWER(l.language)
+    ) AS songs,
+
+    (
+      SELECT COUNT(*)::int
+      FROM albums a
+      WHERE LOWER(TRIM(COALESCE(a.language, ''))) =
+            LOWER(l.language)
+    ) AS albums,
+
+    (
+      SELECT COUNT(*)::int
+      FROM artists ar
+      WHERE LOWER(TRIM(COALESCE(ar.language, ''))) =
+            LOWER(l.language)
+    ) AS artists,
+
+    (
+      SELECT COUNT(*)::int
+      FROM categories c
+      WHERE LOWER(TRIM(COALESCE(c.language, ''))) =
+            LOWER(l.language)
+    ) AS categories,
+
+    (
+      SELECT COUNT(*)::int
+      FROM ministries m
+      WHERE LOWER(TRIM(COALESCE(m.language, ''))) =
+            LOWER(l.language)
+    ) AS ministries
+
+  FROM languages l
+  ORDER BY
+    CASE l.language
+      WHEN 'Telugu' THEN 1
+      WHEN 'Hindi' THEN 2
+      WHEN 'English' THEN 3
+      WHEN 'Malayalam' THEN 4
+      WHEN 'Kannada' THEN 5
+      WHEN 'Tamil' THEN 6
+      ELSE 99
+    END
+`);
+const musicByLanguage =
+  musicLanguageResult.rows.map((row) => ({
+    language: row.language,
+
+    songs: Number(
+      row.songs || 0
+    ),
+
+    albums: Number(
+      row.albums || 0
+    ),
+
+    artists: Number(
+      row.artists || 0
+    ),
+
+    categories: Number(
+      row.categories || 0
+    ),
+
+    ministries: Number(
+      row.ministries || 0
+    ),
+  }));
+    /* =====================================================
+       LANGUAGE STATISTICS
+    ===================================================== */
+
+    const languageResult = await pool.query(`
+      SELECT
+        COUNT(*)::int AS total,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Telugu')
+        )::int AS telugu,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Hindi')
+        )::int AS hindi,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('English')
+        )::int AS english,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Malayalam')
+        )::int AS malayalam,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Kannada')
+        )::int AS kannada,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Tamil')
+        )::int AS tamil,
+
+        COUNT(*) FILTER (
+          WHERE language IS NULL
+             OR TRIM(language) = ''
+             OR LOWER(TRIM(language))
+                NOT IN (
+                  'telugu',
+                  'hindi',
+                  'english',
+                  'malayalam',
+                  'kannada',
+                  'tamil'
+                )
+        )::int AS other
+      FROM songs
+    `);
+
+
+    const languageStats = languageResult.rows[0] || {};
+
+    const totalLanguageSongs =
+      Number(languageStats.total || 0);
+
+
+    const createLanguageItem = (
+      name,
+      key
+    ) => {
+      const count = Number(
+        languageStats[key] || 0
+      );
+
+      const percentage =
+        totalLanguageSongs > 0
+          ? Number(
+              (
+                (count / totalLanguageSongs) *
+                100
+              ).toFixed(1)
+            )
+          : 0;
+
+      return {
+        language: name,
+        count,
+        percentage,
+      };
+    };
+
+
+    const languages = [
+      createLanguageItem("Telugu", "telugu"),
+      createLanguageItem("Hindi", "hindi"),
+      createLanguageItem("English", "english"),
+      createLanguageItem("Malayalam", "malayalam"),
+      createLanguageItem("Kannada", "kannada"),
+      createLanguageItem("Tamil", "tamil"),
+      createLanguageItem("Other", "other"),
+    ];
+
+
+    /* =====================================================
+       TODAY'S STATISTICS
+    ===================================================== */
+
+    const todayResult = await pool.query(`
+      SELECT
+        COUNT(*)::int AS total,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Telugu')
+        )::int AS telugu,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Hindi')
+        )::int AS hindi,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('English')
+        )::int AS english,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Malayalam')
+        )::int AS malayalam,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Kannada')
+        )::int AS kannada,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Tamil')
+        )::int AS tamil
+      FROM songs
+      WHERE created_at::date = CURRENT_DATE
+    `);
+
+
+    const today = todayResult.rows[0] || {};
+
+
+    /* =====================================================
+       MONTH RANGE
+    ===================================================== */
+
+    let monthStartExpression = `
+      date_trunc('month', CURRENT_DATE)
+    `;
+
+    let nextMonthExpression = `
+      date_trunc('month', CURRENT_DATE)
+      + INTERVAL '1 month'
+    `;
+
+    if (validMonth) {
+      monthStartExpression = `
+        TO_DATE($1, 'YYYY-MM')
+      `;
+
+      nextMonthExpression = `
+        TO_DATE($1, 'YYYY-MM')
+        + INTERVAL '1 month'
+      `;
+    }
+
+
+    /* =====================================================
+       CALENDAR DAILY STATISTICS
+    ===================================================== */
+
+    const calendarQuery = `
+      SELECT
+        created_at::date AS date,
+
+        COUNT(*)::int AS total,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Telugu')
+        )::int AS telugu,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Hindi')
+        )::int AS hindi,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('English')
+        )::int AS english,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Malayalam')
+        )::int AS malayalam,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Kannada')
+        )::int AS kannada,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Tamil')
+        )::int AS tamil
+
+      FROM songs
+
+      WHERE created_at >= ${monthStartExpression}
+        AND created_at < ${nextMonthExpression}
+
+      GROUP BY created_at::date
+      ORDER BY created_at::date ASC
+    `;
+
+
+    const calendarParams =
+      validMonth
+        ? [validMonth]
+        : [];
+
+
+    const calendarResult = await pool.query(
+      calendarQuery,
+      calendarParams
+    );
+
+
+    const calendar = calendarResult.rows.map(
+      (row) => ({
+        date: row.date,
+        total: Number(row.total || 0),
+        telugu: Number(row.telugu || 0),
+        hindi: Number(row.hindi || 0),
+        english: Number(row.english || 0),
+        malayalam: Number(row.malayalam || 0),
+        kannada: Number(row.kannada || 0),
+        tamil: Number(row.tamil || 0),
+      })
+    );
+
+
+    /* =====================================================
+       ADMIN CONTRIBUTIONS - ALL TIME
+    ===================================================== */
+
+    const adminContributionResult =
+      await pool.query(`
+        SELECT
+          u.id AS admin_id,
+          u.name AS admin_name,
+          u.email AS admin_email,
+
+          COUNT(s.id)::int AS total_songs,
+
+          COUNT(s.id) FILTER (
+            WHERE LOWER(TRIM(COALESCE(s.language, '')))
+            = LOWER('Telugu')
+          )::int AS telugu,
+
+          COUNT(s.id) FILTER (
+            WHERE LOWER(TRIM(COALESCE(s.language, '')))
+            = LOWER('Hindi')
+          )::int AS hindi,
+
+          COUNT(s.id) FILTER (
+            WHERE LOWER(TRIM(COALESCE(s.language, '')))
+            = LOWER('English')
+          )::int AS english,
+
+          COUNT(s.id) FILTER (
+            WHERE LOWER(TRIM(COALESCE(s.language, '')))
+            = LOWER('Malayalam')
+          )::int AS malayalam,
+
+          COUNT(s.id) FILTER (
+            WHERE LOWER(TRIM(COALESCE(s.language, '')))
+            = LOWER('Kannada')
+          )::int AS kannada,
+
+          COUNT(s.id) FILTER (
+            WHERE LOWER(TRIM(COALESCE(s.language, '')))
+            = LOWER('Tamil')
+          )::int AS tamil
+
+        FROM songs s
+
+        INNER JOIN users u
+          ON u.id = s.created_by
+
+        WHERE UPPER(u.role) = 'ADMIN'
+
+        GROUP BY
+          u.id,
+          u.name,
+          u.email
+
+        ORDER BY total_songs DESC
+      `);
+
+
+    const adminContributions =
+      adminContributionResult.rows.map(
+        (row) => ({
+          adminId: row.admin_id,
+          adminName: row.admin_name,
+          adminEmail: row.admin_email,
+
+          totalSongs:
+            Number(row.total_songs || 0),
+
+          languages: {
+            Telugu:
+              Number(row.telugu || 0),
+
+            Hindi:
+              Number(row.hindi || 0),
+
+            English:
+              Number(row.english || 0),
+
+            Malayalam:
+              Number(row.malayalam || 0),
+
+            Kannada:
+              Number(row.kannada || 0),
+
+            Tamil:
+              Number(row.tamil || 0),
+          },
+        })
+      );
+
+
+    /* =====================================================
+       UNASSIGNED / OLD SONGS
+       Songs created before created_by was implemented
+    ===================================================== */
+
+    const unassignedResult = await pool.query(`
+      SELECT
+        COUNT(*)::int AS total,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Telugu')
+        )::int AS telugu,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Hindi')
+        )::int AS hindi,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('English')
+        )::int AS english,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Malayalam')
+        )::int AS malayalam,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Kannada')
+        )::int AS kannada,
+
+        COUNT(*) FILTER (
+          WHERE LOWER(TRIM(COALESCE(language, '')))
+          = LOWER('Tamil')
+        )::int AS tamil
+
+      FROM songs
+      WHERE created_by IS NULL
+    `);
+
+
+    const unassigned =
+      unassignedResult.rows[0] || {};
+
+
+    /* =====================================================
+       SELECTED DATE
+    ===================================================== */
+
+    let selectedDateExpression =
+      "CURRENT_DATE";
+
+    let selectedDateParams = [];
+
+    if (validDate) {
+      selectedDateExpression =
+        "$1::date";
+
+      selectedDateParams = [
+        validDate,
+      ];
+    }
+
+
+    const selectedDateResult =
+      await pool.query(
+        `
+        SELECT
+          COUNT(*)::int AS total,
+
+          COUNT(*) FILTER (
+            WHERE LOWER(TRIM(COALESCE(language, '')))
+            = LOWER('Telugu')
+          )::int AS telugu,
+
+          COUNT(*) FILTER (
+            WHERE LOWER(TRIM(COALESCE(language, '')))
+            = LOWER('Hindi')
+          )::int AS hindi,
+
+          COUNT(*) FILTER (
+            WHERE LOWER(TRIM(COALESCE(language, '')))
+            = LOWER('English')
+          )::int AS english,
+
+          COUNT(*) FILTER (
+            WHERE LOWER(TRIM(COALESCE(language, '')))
+            = LOWER('Malayalam')
+          )::int AS malayalam,
+
+          COUNT(*) FILTER (
+            WHERE LOWER(TRIM(COALESCE(language, '')))
+            = LOWER('Kannada')
+          )::int AS kannada,
+
+          COUNT(*) FILTER (
+            WHERE LOWER(TRIM(COALESCE(language, '')))
+            = LOWER('Tamil')
+          )::int AS tamil
+
+        FROM songs
+        WHERE created_at::date = ${selectedDateExpression}
+        `,
+        selectedDateParams
+      );
+
+
+    const selectedDate =
+      selectedDateResult.rows[0] || {};
+
+
+    /* =====================================================
+       SELECTED DATE - ADMIN BREAKDOWN
+    ===================================================== */
+
+    const selectedDateAdminsResult =
+      await pool.query(
+        `
+        SELECT
+          u.id AS admin_id,
+          u.name AS admin_name,
+          u.email AS admin_email,
+
+          COUNT(s.id)::int AS total_songs,
+
+          COUNT(s.id) FILTER (
+            WHERE LOWER(TRIM(COALESCE(s.language, '')))
+            = LOWER('Telugu')
+          )::int AS telugu,
+
+          COUNT(s.id) FILTER (
+            WHERE LOWER(TRIM(COALESCE(s.language, '')))
+            = LOWER('Hindi')
+          )::int AS hindi,
+
+          COUNT(s.id) FILTER (
+            WHERE LOWER(TRIM(COALESCE(s.language, '')))
+            = LOWER('English')
+          )::int AS english,
+
+          COUNT(s.id) FILTER (
+            WHERE LOWER(TRIM(COALESCE(s.language, '')))
+            = LOWER('Malayalam')
+          )::int AS malayalam,
+
+          COUNT(s.id) FILTER (
+            WHERE LOWER(TRIM(COALESCE(s.language, '')))
+            = LOWER('Kannada')
+          )::int AS kannada,
+
+          COUNT(s.id) FILTER (
+            WHERE LOWER(TRIM(COALESCE(s.language, '')))
+            = LOWER('Tamil')
+          )::int AS tamil
+
+        FROM songs s
+
+        INNER JOIN users u
+          ON u.id = s.created_by
+
+        WHERE UPPER(u.role) = 'ADMIN'
+          AND s.created_at::date = ${validDate
+            ? "$1::date"
+            : "CURRENT_DATE"}
+
+        GROUP BY
+          u.id,
+          u.name,
+          u.email
+
+        ORDER BY total_songs DESC
+        `,
+        validDate
+          ? [validDate]
+          : []
+      );
+
+
+    const selectedDateAdmins =
+      selectedDateAdminsResult.rows.map(
+        (row) => ({
+          adminId: row.admin_id,
+          adminName: row.admin_name,
+          adminEmail: row.admin_email,
+
+          totalSongs:
+            Number(row.total_songs || 0),
+
+          languages: {
+            Telugu:
+              Number(row.telugu || 0),
+
+            Hindi:
+              Number(row.hindi || 0),
+
+            English:
+              Number(row.english || 0),
+
+            Malayalam:
+              Number(row.malayalam || 0),
+
+            Kannada:
+              Number(row.kannada || 0),
+
+            Tamil:
+              Number(row.tamil || 0),
+          },
+        })
+      );
+
+
+    /* =====================================================
        LISTENING
-    ----------------------------------------------------- */
+    ===================================================== */
 
     const totalPlaysResult = await pool.query(`
       SELECT COUNT(*)::int AS count
@@ -672,18 +1370,19 @@ const getOwnerStatistics = async (req, res) => {
       WHERE completed = true
     `);
 
-    const totalListeningTimeResult = await pool.query(`
-      SELECT COALESCE(
-        SUM(progress_seconds),
-        0
-      )::bigint AS total_seconds
-      FROM listening_history
-    `);
+    const totalListeningTimeResult =
+      await pool.query(`
+        SELECT COALESCE(
+          SUM(progress_seconds),
+          0
+        )::bigint AS total_seconds
+        FROM listening_history
+      `);
 
 
-    /* -----------------------------------------------------
+    /* =====================================================
        LIKES
-    ----------------------------------------------------- */
+    ===================================================== */
 
     const totalLikesResult = await pool.query(`
       SELECT COUNT(*)::int AS count
@@ -691,212 +1390,399 @@ const getOwnerStatistics = async (req, res) => {
     `);
 
 
-    /* -----------------------------------------------------
+    /* =====================================================
        PLAYLISTS
-    ----------------------------------------------------- */
+    ===================================================== */
 
-    const totalPlaylistsResult = await pool.query(`
-      SELECT COUNT(*)::int AS count
-      FROM playlists
-    `);
+    const totalPlaylistsResult =
+      await pool.query(`
+        SELECT COUNT(*)::int AS count
+        FROM playlists
+      `);
 
-    const totalPlaylistSongsResult = await pool.query(`
-      SELECT COUNT(*)::int AS count
-      FROM playlist_songs
-    `);
+    const totalPlaylistSongsResult =
+      await pool.query(`
+        SELECT COUNT(*)::int AS count
+        FROM playlist_songs
+      `);
 
 
-    /* -----------------------------------------------------
+    /* =====================================================
        SUBSCRIPTIONS
-    ----------------------------------------------------- */
+    ===================================================== */
 
-    const totalSubscriptionsResult = await pool.query(`
-      SELECT COUNT(*)::int AS count
-      FROM subscriptions
-    `);
+    const totalSubscriptionsResult =
+      await pool.query(`
+        SELECT COUNT(*)::int AS count
+        FROM subscriptions
+      `);
 
-    const activeSubscriptionsResult = await pool.query(`
-      SELECT COUNT(*)::int AS count
-      FROM subscriptions
-      WHERE LOWER(status) = 'active'
-    `);
+    const activeSubscriptionsResult =
+      await pool.query(`
+        SELECT COUNT(*)::int AS count
+        FROM subscriptions
+        WHERE LOWER(status) = 'active'
+      `);
 
 
-    /* -----------------------------------------------------
+    /* =====================================================
        PAYMENTS
-    ----------------------------------------------------- */
+    ===================================================== */
 
-    const totalPaymentsResult = await pool.query(`
-      SELECT COUNT(*)::int AS count
-      FROM payments
-    `);
+    const totalPaymentsResult =
+      await pool.query(`
+        SELECT COUNT(*)::int AS count
+        FROM payments
+      `);
 
-    const successfulPaymentsResult = await pool.query(`
-      SELECT COUNT(*)::int AS count
-      FROM payments
-      WHERE LOWER(status) IN (
-        'success',
-        'successful',
-        'paid',
-        'completed'
-      )
-    `);
+    const successfulPaymentsResult =
+      await pool.query(`
+        SELECT COUNT(*)::int AS count
+        FROM payments
+        WHERE LOWER(status) IN (
+          'success',
+          'successful',
+          'paid',
+          'completed'
+        )
+      `);
 
-    const totalRevenueResult = await pool.query(`
-      SELECT COALESCE(
-        SUM(amount),
-        0
-      )::numeric AS total_revenue
-      FROM payments
-      WHERE LOWER(status) IN (
-        'success',
-        'successful',
-        'paid',
-        'completed'
-      )
-    `);
+    const totalRevenueResult =
+      await pool.query(`
+        SELECT COALESCE(
+          SUM(amount),
+          0
+        )::numeric AS total_revenue
+        FROM payments
+        WHERE LOWER(status) IN (
+          'success',
+          'successful',
+          'paid',
+          'completed'
+        )
+      `);
 
 
-    /* -----------------------------------------------------
+    /* =====================================================
        RECENT USERS
-    ----------------------------------------------------- */
+    ===================================================== */
 
-    const recentUsersResult = await pool.query(`
-      SELECT
-        id,
-        name,
-        email,
-        role,
-        mobile,
-        created_at
-      FROM users
-      ORDER BY created_at DESC
-      LIMIT 5
-    `);
+    const recentUsersResult =
+      await pool.query(`
+        SELECT
+          id,
+          name,
+          email,
+          role,
+          mobile,
+          created_at
+        FROM users
+        ORDER BY created_at DESC
+        LIMIT 5
+      `);
 
 
-    /* -----------------------------------------------------
+    /* =====================================================
        TOP SONGS
-    ----------------------------------------------------- */
+    ===================================================== */
 
-    const topSongsResult = await pool.query(`
-      SELECT
-        s.id,
-        s.title,
-        s.artist,
-        s.cover_url,
-        COUNT(lh.id)::int AS play_count
-      FROM songs s
-      LEFT JOIN listening_history lh
-        ON lh.song_id = s.id
-      GROUP BY
-        s.id,
-        s.title,
-        s.artist,
-        s.cover_url
-      ORDER BY play_count DESC
-      LIMIT 5
-    `);
+    const topSongsResult =
+      await pool.query(`
+        SELECT
+          s.id,
+          s.title,
+          s.artist,
+          s.cover_url,
+          COUNT(lh.id)::int AS play_count
+        FROM songs s
+        LEFT JOIN listening_history lh
+          ON lh.song_id = s.id
+        GROUP BY
+          s.id,
+          s.title,
+          s.artist,
+          s.cover_url
+        ORDER BY play_count DESC
+        LIMIT 5
+      `);
 
 
-    /* -----------------------------------------------------
+    /* =====================================================
        TOP LIKED SONGS
-    ----------------------------------------------------- */
+    ===================================================== */
 
-    const topLikedSongsResult = await pool.query(`
-      SELECT
-        s.id,
-        s.title,
-        s.artist,
-        s.cover_url,
-        COUNT(ls.id)::int AS like_count
-      FROM songs s
-      LEFT JOIN liked_songs ls
-        ON ls.song_id = s.id
-      GROUP BY
-        s.id,
-        s.title,
-        s.artist,
-        s.cover_url
-      ORDER BY like_count DESC
-      LIMIT 5
-    `);
+    const topLikedSongsResult =
+      await pool.query(`
+        SELECT
+          s.id,
+          s.title,
+          s.artist,
+          s.cover_url,
+          COUNT(ls.id)::int AS like_count
+        FROM songs s
+        LEFT JOIN liked_songs ls
+          ON ls.song_id = s.id
+        GROUP BY
+          s.id,
+          s.title,
+          s.artist,
+          s.cover_url
+        ORDER BY like_count DESC
+        LIMIT 5
+      `);
 
 
-    /* -----------------------------------------------------
+    /* =====================================================
        RECENT LISTENING
-    ----------------------------------------------------- */
+    ===================================================== */
 
-    const recentListeningResult = await pool.query(`
-      SELECT
-        lh.id,
-        lh.user_id,
-        lh.song_id,
-        lh.progress_seconds,
-        lh.completed,
-        lh.played_at,
-        s.title AS song_title,
-        s.artist AS song_artist,
-        u.name AS user_name
-      FROM listening_history lh
-      LEFT JOIN songs s
-        ON s.id = lh.song_id
-      LEFT JOIN users u
-        ON u.id = lh.user_id
-      ORDER BY lh.played_at DESC
-      LIMIT 10
-    `);
+    const recentListeningResult =
+      await pool.query(`
+        SELECT
+          lh.id,
+          lh.user_id,
+          lh.song_id,
+          lh.progress_seconds,
+          lh.completed,
+          lh.played_at,
+          s.title AS song_title,
+          s.artist AS song_artist,
+          u.name AS user_name
+        FROM listening_history lh
+        LEFT JOIN songs s
+          ON s.id = lh.song_id
+        LEFT JOIN users u
+          ON u.id = lh.user_id
+        ORDER BY lh.played_at DESC
+        LIMIT 10
+      `);
 
 
-    /* -----------------------------------------------------
+    /* =====================================================
+       LISTENING TIME
+    ===================================================== */
+
+    const totalListeningSeconds =
+      Number(
+        totalListeningTimeResult.rows[0]
+          ?.total_seconds || 0
+      );
+
+    const totalListeningMinutes =
+      Math.floor(
+        totalListeningSeconds / 60
+      );
+
+    const totalListeningHours =
+      Math.floor(
+        totalListeningSeconds / 3600
+      );
+
+
+    /* =====================================================
        FINAL STATISTICS
-    ----------------------------------------------------- */
-
-    const totalListeningSeconds = Number(
-      totalListeningTimeResult.rows[0].total_seconds || 0
-    );
-
-    const totalListeningMinutes = Math.floor(
-      totalListeningSeconds / 60
-    );
-
-    const totalListeningHours = Math.floor(
-      totalListeningSeconds / 3600
-    );
-
+    ===================================================== */
 
     const statistics = {
+
+      /* ---------------------------------------------------
+         USERS
+      --------------------------------------------------- */
+
       users: {
-        total: totalUsersResult.rows[0].count,
+        total:
+          Number(
+            totalUsersResult.rows[0]?.count || 0
+          ),
+
         businessOwners:
-          businessOwnersResult.rows[0].count,
+          Number(
+            businessOwnersResult.rows[0]?.count || 0
+          ),
+
+        admins:
+          Number(
+            adminUsersResult.rows[0]?.count || 0
+          ),
+
         normalUsers:
-          normalUsersResult.rows[0].count,
+          Number(
+            normalUsersResult.rows[0]?.count || 0
+          ),
       },
+
+
+      /* ---------------------------------------------------
+         MUSIC
+      --------------------------------------------------- */
 
       music: {
         totalSongs:
-          totalSongsResult.rows[0].count,
+          Number(
+            totalSongsResult.rows[0]?.count || 0
+          ),
 
         featuredSongs:
-          featuredSongsResult.rows[0].count,
+          Number(
+            featuredSongsResult.rows[0]?.count || 0
+          ),
 
         totalAlbums:
-          totalAlbumsResult.rows[0].count,
+          Number(
+            totalAlbumsResult.rows[0]?.count || 0
+          ),
 
         totalArtists:
-          totalArtistsResult.rows[0].count,
+          Number(
+            totalArtistsResult.rows[0]?.count || 0
+          ),
 
         totalCategories:
-          totalCategoriesResult.rows[0].count,
+          Number(
+            totalCategoriesResult.rows[0]?.count || 0
+          ),
       },
+
+
+      /* ---------------------------------------------------
+         LANGUAGE
+      --------------------------------------------------- */
+
+      languages,
+      /* ---------------------------------------------------
+   MUSIC COLLECTION BY LANGUAGE
+--------------------------------------------------- */
+
+musicByLanguage,
+
+
+      /* ---------------------------------------------------
+         TODAY
+      --------------------------------------------------- */
+
+      today: {
+        total:
+          Number(today.total || 0),
+
+        Telugu:
+          Number(today.telugu || 0),
+
+        Hindi:
+          Number(today.hindi || 0),
+
+        English:
+          Number(today.english || 0),
+
+        Malayalam:
+          Number(today.malayalam || 0),
+
+        Kannada:
+          Number(today.kannada || 0),
+
+        Tamil:
+          Number(today.tamil || 0),
+      },
+
+
+      /* ---------------------------------------------------
+         ADMIN CONTRIBUTIONS
+      --------------------------------------------------- */
+
+      adminContributions,
+
+
+      /* ---------------------------------------------------
+         OLD / UNASSIGNED SONGS
+      --------------------------------------------------- */
+
+      unassignedSongs: {
+        total:
+          Number(unassigned.total || 0),
+
+        Telugu:
+          Number(unassigned.telugu || 0),
+
+        Hindi:
+          Number(unassigned.hindi || 0),
+
+        English:
+          Number(unassigned.english || 0),
+
+        Malayalam:
+          Number(unassigned.malayalam || 0),
+
+        Kannada:
+          Number(unassigned.kannada || 0),
+
+        Tamil:
+          Number(unassigned.tamil || 0),
+      },
+
+
+      /* ---------------------------------------------------
+         CALENDAR
+      --------------------------------------------------- */
+
+      calendar: {
+        month:
+          validMonth ||
+          new Date().toISOString().slice(0, 7),
+
+        days: calendar,
+      },
+
+
+      /* ---------------------------------------------------
+         SELECTED DATE
+      --------------------------------------------------- */
+
+      selectedDate: {
+        date:
+          validDate ||
+          new Date().toISOString().slice(0, 10),
+
+        total:
+          Number(selectedDate.total || 0),
+
+        languages: {
+          Telugu:
+            Number(selectedDate.telugu || 0),
+
+          Hindi:
+            Number(selectedDate.hindi || 0),
+
+          English:
+            Number(selectedDate.english || 0),
+
+          Malayalam:
+            Number(selectedDate.malayalam || 0),
+
+          Kannada:
+            Number(selectedDate.kannada || 0),
+
+          Tamil:
+            Number(selectedDate.tamil || 0),
+        },
+
+        admins:
+          selectedDateAdmins,
+      },
+
+
+      /* ---------------------------------------------------
+         LISTENING
+      --------------------------------------------------- */
 
       listening: {
         totalPlays:
-          totalPlaysResult.rows[0].count,
+          Number(
+            totalPlaysResult.rows[0]?.count || 0
+          ),
 
         completedPlays:
-          completedPlaysResult.rows[0].count,
+          Number(
+            completedPlaysResult.rows[0]?.count || 0
+          ),
 
         totalListeningSeconds,
 
@@ -905,39 +1791,79 @@ const getOwnerStatistics = async (req, res) => {
         totalListeningHours,
       },
 
+
+      /* ---------------------------------------------------
+         LIKES
+      --------------------------------------------------- */
+
       likes: {
         totalLikes:
-          totalLikesResult.rows[0].count,
+          Number(
+            totalLikesResult.rows[0]?.count || 0
+          ),
       },
+
+
+      /* ---------------------------------------------------
+         PLAYLISTS
+      --------------------------------------------------- */
 
       playlists: {
         totalPlaylists:
-          totalPlaylistsResult.rows[0].count,
+          Number(
+            totalPlaylistsResult.rows[0]?.count || 0
+          ),
 
         totalPlaylistSongs:
-          totalPlaylistSongsResult.rows[0].count,
+          Number(
+            totalPlaylistSongsResult.rows[0]?.count || 0
+          ),
       },
+
+
+      /* ---------------------------------------------------
+         SUBSCRIPTIONS
+      --------------------------------------------------- */
 
       subscriptions: {
         totalSubscriptions:
-          totalSubscriptionsResult.rows[0].count,
+          Number(
+            totalSubscriptionsResult.rows[0]?.count || 0
+          ),
 
         activeSubscriptions:
-          activeSubscriptionsResult.rows[0].count,
+          Number(
+            activeSubscriptionsResult.rows[0]?.count || 0
+          ),
       },
+
+
+      /* ---------------------------------------------------
+         PAYMENTS
+      --------------------------------------------------- */
 
       payments: {
         totalPayments:
-          totalPaymentsResult.rows[0].count,
+          Number(
+            totalPaymentsResult.rows[0]?.count || 0
+          ),
 
         successfulPayments:
-          successfulPaymentsResult.rows[0].count,
+          Number(
+            successfulPaymentsResult.rows[0]?.count || 0
+          ),
 
         totalRevenue:
           Number(
-            totalRevenueResult.rows[0].total_revenue || 0
+            totalRevenueResult.rows[0]
+              ?.total_revenue || 0
           ),
       },
+
+
+      /* ---------------------------------------------------
+         RECENT DATA
+      --------------------------------------------------- */
 
       recentUsers:
         recentUsersResult.rows,
@@ -953,12 +1879,17 @@ const getOwnerStatistics = async (req, res) => {
     };
 
 
+    /* =====================================================
+       RESPONSE
+    ===================================================== */
+
     return res.status(200).json({
       success: true,
       statistics,
     });
 
   } catch (error) {
+
     console.error(
       "Get Owner Statistics Error:",
       error
@@ -967,6 +1898,10 @@ const getOwnerStatistics = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to fetch statistics",
+      error:
+        process.env.NODE_ENV === "development"
+          ? error.message
+          : undefined,
     });
   }
 };

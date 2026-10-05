@@ -72,6 +72,7 @@ const getAdminSongs = async (req, res) => {
 };
 
 
+
 /* =========================================================
    CREATE SONG
 ========================================================= */
@@ -90,12 +91,16 @@ const createSong = async (req, res) => {
       featured,
     } = req.body;
 
-
     console.log(
       "========== CREATE SONG BODY =========="
     );
 
     console.log(req.body);
+
+    console.log(
+      "LOGGED-IN USER:",
+      req.user
+    );
 
     console.log(
       "MINISTRY ID RECEIVED:",
@@ -108,13 +113,39 @@ const createSong = async (req, res) => {
 
 
     /* =====================================================
+       CREATED BY
+    ===================================================== */
+
+    const createdBy = req.user?.id
+      ? Number(req.user.id)
+      : null;
+
+
+    /*
+      created_by is important for Business Owner statistics.
+
+      Every newly uploaded song will be connected
+      to the admin who uploaded it.
+    */
+
+    if (!createdBy || !Number.isInteger(createdBy)) {
+      return res.status(401).json({
+        success: false,
+        message:
+          "Unable to identify the logged-in admin",
+      });
+    }
+
+
+    /* =====================================================
        VALIDATE TITLE
     ===================================================== */
 
     if (!title || !title.trim()) {
       return res.status(400).json({
         success: false,
-        message: "Song title is required",
+        message:
+          "Song title is required",
       });
     }
 
@@ -163,6 +194,38 @@ const createSong = async (req, res) => {
     const isFeatured =
       featured === true ||
       featured === "true";
+
+
+    /* =====================================================
+       LANGUAGE
+    ===================================================== */
+
+    const selectedLanguage =
+      String(language || "Telugu").trim();
+
+
+    const allowedLanguages = [
+      "Telugu",
+      "Hindi",
+      "English",
+      "Malayalam",
+      "Kannada",
+      "Tamil",
+    ];
+
+
+    if (
+      !allowedLanguages.includes(
+        selectedLanguage
+      )
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invalid song language",
+        allowedLanguages,
+      });
+    }
 
 
     /* =====================================================
@@ -216,6 +279,7 @@ const createSong = async (req, res) => {
     ===================================================== */
 
     if (ministryId !== null) {
+
       const ministryResult =
         await pool.query(
           `
@@ -225,6 +289,7 @@ const createSong = async (req, res) => {
           `,
           [ministryId]
         );
+
 
       if (
         ministryResult.rows.length === 0
@@ -257,7 +322,8 @@ const createSong = async (req, res) => {
           album_id,
           category_id,
           featured,
-          ministry_id
+          ministry_id,
+          created_by
         )
 
         VALUES
@@ -272,7 +338,8 @@ const createSong = async (req, res) => {
           $8,
           $9,
           $10,
-          $11
+          $11,
+          $12
         )
 
         RETURNING *
@@ -283,8 +350,7 @@ const createSong = async (req, res) => {
           title_english?.trim() ||
             null,
 
-          language ||
-            "Telugu",
+          selectedLanguage,
 
           lyrics ||
             null,
@@ -302,6 +368,8 @@ const createSong = async (req, res) => {
           isFeatured,
 
           ministryId,
+
+          createdBy,
         ]
       );
 
@@ -311,6 +379,7 @@ const createSong = async (req, res) => {
     ===================================================== */
 
     return res.status(201).json({
+
       success: true,
 
       message:
@@ -318,10 +387,12 @@ const createSong = async (req, res) => {
 
       song:
         result.rows[0],
+
     });
 
 
   } catch (error) {
+
     console.error(
       "Create song error:",
       error
@@ -338,7 +409,7 @@ const createSong = async (req, res) => {
       return res.status(400).json({
         success: false,
         message:
-          "Invalid artist, album, category or ministry",
+          "Invalid artist, album, category, ministry or creator",
       });
     }
 
@@ -348,8 +419,11 @@ const createSong = async (req, res) => {
       message:
         "Unable to upload song",
     });
+
   }
 };
+
+
 
 
 /* =========================================================
