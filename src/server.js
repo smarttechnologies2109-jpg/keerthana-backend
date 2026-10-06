@@ -1,3 +1,4 @@
+
 // =========================================================
 // server.js
 // KEERTHANA - Backend Server
@@ -106,7 +107,11 @@ const corsOptions = {
   credentials: true,
 };
 
+// Normal CORS middleware
 app.use(cors(corsOptions));
+
+// Express 5 compatible preflight handler
+app.options(/.*/, cors(corsOptions));
 
 // =========================================================
 // BODY PARSER
