@@ -85,6 +85,7 @@ app.use(
     origin: [
       "http://localhost:5173",
       "http://127.0.0.1:5173",
+	  "https://main.d2g46r2zbmr5co.amplifyapp.com",
     ],
     credentials: true,
   })
