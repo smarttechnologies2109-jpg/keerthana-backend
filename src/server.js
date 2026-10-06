@@ -1,4 +1,3 @@
-
 // =========================================================
 // server.js
 // KEERTHANA - Backend Server
@@ -61,9 +60,12 @@ const songReportRoutes = require("./routes/songReportRoutes");
 
 const notificationRoutes = require("./routes/notificationRoutes");
 
+// =========================================================
+// OWNER MUSIC ROUTES
+// =========================================================
 
-const ownerMusicRoutes =
-  require("./routes/ownerMusicRoutes");
+const ownerMusicRoutes = require("./routes/ownerMusicRoutes");
+
 // =========================================================
 // EXPRESS APP
 // =========================================================
@@ -80,16 +82,31 @@ const PORT = process.env.PORT || 5000;
 // CORS
 // =========================================================
 
-app.use(
-  cors({
-    origin: [
-      "http://localhost:5173",
-      "http://127.0.0.1:5173",
-	  "https://main.d2g46r2zbmr5co.amplifyapp.com",
-    ],
-    credentials: true,
-  })
-);
+const corsOptions = {
+  origin: [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://main.d2g46r2zbmr5co.amplifyapp.com",
+  ],
+
+  methods: [
+    "GET",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "OPTIONS",
+  ],
+
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+  ],
+
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
 
 // =========================================================
 // BODY PARSER
@@ -507,7 +524,6 @@ app.use(
   statisticsRoutes
 );
 
-
 // =========================================================
 // USER PROFILE ROUTES
 // =========================================================
@@ -516,6 +532,7 @@ app.use(
   "/api/users",
   userRoutes
 );
+
 // =========================================================
 // ADMIN ROUTES
 // =========================================================
@@ -615,11 +632,15 @@ app.use(
   notificationRoutes
 );
 
+// =========================================================
+// OWNER MUSIC ROUTES
+// =========================================================
 
 app.use(
   "/api/owner/music",
   ownerMusicRoutes
 );
+
 // =========================================================
 // 404 HANDLER
 // =========================================================
@@ -755,4 +776,3 @@ async function startServer() {
 // =========================================================
 
 startServer();
-
