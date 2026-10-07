@@ -21,7 +21,7 @@ async function getIamToken() {
     region,
   });
 
-  return signer.getAuthToken();
+  return await signer.getAuthToken();
 }
 
 // =========================================================
@@ -34,15 +34,31 @@ const pool = new Pool({
   database,
   user,
 
-  password: getIamToken,
+  // Generate a fresh IAM authentication token
+  // whenever PostgreSQL creates a new connection.
+  password: async () => {
+    return await getIamToken();
+  },
 
   ssl: {
     rejectUnauthorized: false,
   },
 
+  // Pool configuration
   max: 10,
+
+  // Close unused connections after 30 seconds
   idleTimeoutMillis: 30000,
+
+  // Don't wait indefinitely for a database connection
   connectionTimeoutMillis: 15000,
+
+  // Recycle connections before the IAM token lifetime becomes an issue
+  maxLifetimeSeconds: 600,
+
+  // Keep TCP connections alive
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
 });
 
 // =========================================================
@@ -56,5 +72,9 @@ pool.on("connect", () => {
 pool.on("error", (err) => {
   console.error("❌ PostgreSQL pool error:", err);
 });
+
+// =========================================================
+// EXPORT
+// =========================================================
 
 module.exports = pool;
