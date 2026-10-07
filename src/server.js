@@ -9,7 +9,16 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
-const fs = require("fs");
+
+// =========================================================
+// AWS S3
+// =========================================================
+
+const {
+  S3Client,
+  GetObjectCommand,
+  HeadObjectCommand,
+} = require("@aws-sdk/client-s3");
 
 // =========================================================
 // DATABASE
@@ -80,6 +89,27 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // =========================================================
+// AWS S3 CONFIGURATION
+// =========================================================
+
+const AWS_REGION =
+  process.env.AWS_REGION || "ap-south-1";
+
+const S3_BUCKET_NAME =
+  process.env.S3_BUCKET_NAME ||
+  "keerthana-media-908209635187";
+
+const s3 = new S3Client({
+  region: AWS_REGION,
+});
+
+console.log("========================================");
+console.log("S3 CONFIGURATION");
+console.log("AWS REGION:", AWS_REGION);
+console.log("S3 BUCKET:", S3_BUCKET_NAME);
+console.log("========================================");
+
+// =========================================================
 // CORS
 // =========================================================
 
@@ -107,10 +137,16 @@ const corsOptions = {
   credentials: true,
 };
 
-// Normal CORS middleware
+// =========================================================
+// CORS MIDDLEWARE
+// =========================================================
+
 app.use(cors(corsOptions));
 
-// Express 5 compatible preflight handler
+// =========================================================
+// EXPRESS 5 PREFLIGHT
+// =========================================================
+
 app.options(/.*/, cors(corsOptions));
 
 // =========================================================
@@ -143,98 +179,123 @@ app.use((req, res, next) => {
 });
 
 // =========================================================
-// STATIC FILES
+// STATIC LOCAL FILES
 // =========================================================
 
 // ---------------------------------------------------------
-// UPLOADS
+// LOCAL UPLOADS
 // backend/src/uploads
 // ---------------------------------------------------------
 
 app.use(
   "/uploads",
   express.static(
-    path.join(__dirname, "uploads")
+    path.join(
+      __dirname,
+      "uploads"
+    )
   )
 );
 
 // =========================================================
-// AUDIO FILES
-// =========================================================
-//
-// server.js:
-// backend/src/server.js
-//
-// Audio folder:
-// backend/public/audio
-//
-// Browser URL:
-// http://localhost:5000/media/audio/file.mp3
+// S3 MEDIA HELPERS
 // =========================================================
 
-const audioPath = path.join(
-  __dirname,
-  "..",
-  "public",
-  "audio"
-);
+// ---------------------------------------------------------
+// Get MIME type
+// ---------------------------------------------------------
 
-console.log(
-  "========================================"
-);
+function getContentType(filename) {
+  const extension =
+    path.extname(filename)
+      .toLowerCase();
 
-console.log(
-  "AUDIO FOLDER:",
-  audioPath
-);
+  const contentTypes = {
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
 
-console.log(
-  "AUDIO FOLDER EXISTS:",
-  fs.existsSync(audioPath)
-);
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+  };
 
-console.log(
-  "========================================"
-);
+  return (
+    contentTypes[extension] ||
+    "application/octet-stream"
+  );
+}
+
+// ---------------------------------------------------------
+// Get safe filename
+// ---------------------------------------------------------
+
+function getSafeFilename(filename) {
+  return path.basename(
+    filename || ""
+  );
+}
 
 // =========================================================
-// AUDIO ROUTE
+// S3 AUDIO ROUTE
+// =========================================================
+//
+// Database value:
+// /media/audio/song.mp3
+//
+// Browser requests:
+// /media/audio/song.mp3
+//
+// S3 object:
+// audio/song.mp3
+//
+// Bucket remains PRIVATE.
+// ECS task role reads the S3 object.
 // =========================================================
 
 app.get(
   "/media/audio/:filename",
-  (req, res) => {
+  async (req, res) => {
     try {
       const filename =
-        req.params.filename;
-
-      // Prevent path traversal
-      const safeFilename =
-        path.basename(filename);
-
-      const filePath =
-        path.join(
-          audioPath,
-          safeFilename
+        getSafeFilename(
+          req.params.filename
         );
+
+      if (!filename) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Audio filename is required",
+        });
+      }
+
+      const key =
+        `audio/${filename}`;
 
       console.log(
         "========================================"
       );
 
       console.log(
-        "AUDIO REQUEST:",
+        "S3 AUDIO REQUEST"
+      );
+
+      console.log(
+        "Filename:",
         filename
       );
 
       console.log(
-        "AUDIO FILE PATH:",
-        filePath
+        "S3 Key:",
+        key
       );
 
       console.log(
-        "AUDIO FILE EXISTS:",
-        fs.existsSync(filePath)
+        "Bucket:",
+        S3_BUCKET_NAME
       );
 
       console.log(
@@ -242,44 +303,155 @@ app.get(
       );
 
       // ---------------------------------------------------
-      // FILE NOT FOUND
+      // Check object information
       // ---------------------------------------------------
 
-      if (
-        !fs.existsSync(filePath)
-      ) {
-        return res.status(404).json({
-          success: false,
-          message:
-            "Audio file not found",
-          filename: safeFilename,
-          filePath: filePath,
-        });
+      const headResult =
+        await s3.send(
+          new HeadObjectCommand({
+            Bucket:
+              S3_BUCKET_NAME,
+            Key: key,
+          })
+        );
+
+      const fileSize =
+        Number(
+          headResult.ContentLength || 0
+        );
+
+      const contentType =
+        headResult.ContentType ||
+        getContentType(filename);
+
+      // ---------------------------------------------------
+      // RANGE REQUEST
+      // ---------------------------------------------------
+
+      const range =
+        req.headers.range;
+
+      let start = 0;
+      let end =
+        fileSize > 0
+          ? fileSize - 1
+          : 0;
+
+      if (range) {
+        const match =
+          range.match(
+            /bytes=(\d*)-(\d*)/
+          );
+
+        if (match) {
+          const requestedStart =
+            match[1] !== ""
+              ? Number(match[1])
+              : null;
+
+          const requestedEnd =
+            match[2] !== ""
+              ? Number(match[2])
+              : null;
+
+          if (
+            requestedStart !== null
+          ) {
+            start =
+              requestedStart;
+          }
+
+          if (
+            requestedEnd !== null
+          ) {
+            end =
+              requestedEnd;
+          }
+
+          // ------------------------------------------------
+          // Handle suffix range
+          // Example: bytes=-500
+          // ------------------------------------------------
+
+          if (
+            requestedStart === null &&
+            requestedEnd !== null
+          ) {
+            const suffixLength =
+              requestedEnd;
+
+            start =
+              Math.max(
+                fileSize -
+                  suffixLength,
+                0
+              );
+
+            end =
+              fileSize - 1;
+          }
+
+          // ------------------------------------------------
+          // Validate range
+          // ------------------------------------------------
+
+          if (
+            start < 0 ||
+            start >= fileSize ||
+            end < start
+          ) {
+            res.status(416);
+
+            res.setHeader(
+              "Content-Range",
+              `bytes */${fileSize}`
+            );
+
+            return res.end();
+          }
+
+          end =
+            Math.min(
+              end,
+              fileSize - 1
+            );
+        }
       }
 
+      const contentLength =
+        end - start + 1;
+
       // ---------------------------------------------------
-      // FILE INFORMATION
+      // S3 GET OBJECT
       // ---------------------------------------------------
 
-      const stat =
-        fs.statSync(filePath);
+      const getCommand =
+        new GetObjectCommand({
+          Bucket:
+            S3_BUCKET_NAME,
 
-      if (!stat.isFile()) {
-        return res.status(404).json({
-          success: false,
-          message:
-            "Audio path is not a file",
-          filename: safeFilename,
+          Key: key,
+
+          ...(range
+            ? {
+                Range:
+                  `bytes=${start}-${end}`,
+              }
+            : {}),
         });
-      }
+
+      const result =
+        await s3.send(
+          getCommand
+        );
 
       // ---------------------------------------------------
-      // AUDIO HEADERS
+      // RESPONSE HEADERS
       // ---------------------------------------------------
 
       res.setHeader(
         "Content-Type",
-        "audio/mpeg"
+        contentType
       );
 
       res.setHeader(
@@ -288,55 +460,87 @@ app.get(
       );
 
       res.setHeader(
-        "Content-Length",
-        stat.size
-      );
-
-      res.setHeader(
         "Cache-Control",
         "public, max-age=3600"
       );
 
-      // ---------------------------------------------------
-      // STREAM AUDIO
-      // ---------------------------------------------------
-
-      const stream =
-        fs.createReadStream(
-          filePath
-        );
-
-      stream.on(
-        "error",
-        (error) => {
-          console.error(
-            "AUDIO STREAM ERROR:",
-            error
-          );
-
-          if (!res.headersSent) {
-            res.status(500).json({
-              success: false,
-              message:
-                "Audio streaming failed",
-            });
-          }
-        }
+      res.setHeader(
+        "Content-Length",
+        contentLength
       );
 
-      stream.pipe(res);
+      // ---------------------------------------------------
+      // RANGE RESPONSE
+      // ---------------------------------------------------
+
+      if (range) {
+        res.status(206);
+
+        res.setHeader(
+          "Content-Range",
+          `bytes ${start}-${end}/${fileSize}`
+        );
+      }
+
+      // ---------------------------------------------------
+      // STREAM FROM S3
+      // ---------------------------------------------------
+
+      if (
+        result.Body &&
+        typeof result.Body.pipe ===
+          "function"
+      ) {
+        result.Body.pipe(res);
+      } else {
+        const chunks = [];
+
+        for await (
+          const chunk of result.Body
+        ) {
+          chunks.push(chunk);
+        }
+
+        res.end(
+          Buffer.concat(chunks)
+        );
+      }
     } catch (error) {
       console.error(
-        "AUDIO ROUTE ERROR:",
+        "S3 AUDIO ERROR:",
         error
       );
 
-      if (!res.headersSent) {
-        res.status(500).json({
+      // ---------------------------------------------------
+      // S3 NOT FOUND
+      // ---------------------------------------------------
+
+      if (
+        error.name ===
+          "NotFound" ||
+        error.name ===
+          "NoSuchKey" ||
+        error.$metadata?.httpStatusCode ===
+          404
+      ) {
+        return res.status(404).json({
           success: false,
           message:
-            "Audio server error",
-          error: error.message,
+            "Audio file not found in S3",
+        });
+      }
+
+      // ---------------------------------------------------
+      // GENERAL ERROR
+      // ---------------------------------------------------
+
+      if (!res.headersSent) {
+        return res.status(500).json({
+          success: false,
+          message:
+            "S3 audio streaming failed",
+          error:
+            error.message,
         });
       }
     }
@@ -344,7 +548,169 @@ app.get(
 );
 
 // =========================================================
-// PUBLIC FILES
+// S3 COVER IMAGE ROUTE
+// =========================================================
+//
+// Database value:
+// /media/images/cover.jpg
+//
+// Browser requests:
+// /media/images/cover.jpg
+//
+// S3 object:
+// covers/cover.jpg
+//
+// Bucket remains PRIVATE.
+// =========================================================
+
+app.get(
+  "/media/images/:filename",
+  async (req, res) => {
+    try {
+      const filename =
+        getSafeFilename(
+          req.params.filename
+        );
+
+      if (!filename) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Image filename is required",
+        });
+      }
+
+      const key =
+        `covers/${filename}`;
+
+      console.log(
+        "========================================"
+      );
+
+      console.log(
+        "S3 IMAGE REQUEST"
+      );
+
+      console.log(
+        "Filename:",
+        filename
+      );
+
+      console.log(
+        "S3 Key:",
+        key
+      );
+
+      console.log(
+        "Bucket:",
+        S3_BUCKET_NAME
+      );
+
+      console.log(
+        "========================================"
+      );
+
+      // ---------------------------------------------------
+      // GET IMAGE
+      // ---------------------------------------------------
+
+      const command =
+        new GetObjectCommand({
+          Bucket:
+            S3_BUCKET_NAME,
+
+          Key: key,
+        });
+
+      const result =
+        await s3.send(
+          command
+        );
+
+      // ---------------------------------------------------
+      // RESPONSE HEADERS
+      // ---------------------------------------------------
+
+      res.setHeader(
+        "Content-Type",
+        result.ContentType ||
+          getContentType(filename)
+      );
+
+      res.setHeader(
+        "Cache-Control",
+        "public, max-age=86400"
+      );
+
+      if (
+        result.ContentLength !==
+        undefined
+      ) {
+        res.setHeader(
+          "Content-Length",
+          result.ContentLength
+        );
+      }
+
+      // ---------------------------------------------------
+      // STREAM IMAGE
+      // ---------------------------------------------------
+
+      if (
+        result.Body &&
+        typeof result.Body.pipe ===
+          "function"
+      ) {
+        result.Body.pipe(res);
+      } else {
+        const chunks = [];
+
+        for await (
+          const chunk of result.Body
+        ) {
+          chunks.push(chunk);
+        }
+
+        res.end(
+          Buffer.concat(chunks)
+        );
+      }
+    } catch (error) {
+      console.error(
+        "S3 IMAGE ERROR:",
+        error
+      );
+
+      if (
+        error.name ===
+          "NotFound" ||
+        error.name ===
+          "NoSuchKey" ||
+        error.$metadata?.httpStatusCode ===
+          404
+      ) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Cover image not found in S3",
+        });
+      }
+
+      if (!res.headersSent) {
+        return res.status(500).json({
+          success: false,
+          message:
+            "S3 image loading failed",
+          error:
+            error.message,
+        });
+      }
+    }
+  }
+);
+
+// =========================================================
+// PUBLIC LOCAL FILES
 // =========================================================
 
 app.use(
@@ -359,7 +725,7 @@ app.use(
 );
 
 // =========================================================
-// ASSETS
+// LOCAL ASSETS
 // =========================================================
 
 app.use(
@@ -550,17 +916,6 @@ app.use(
 // =========================================================
 // ADMIN SONG ROUTES
 // =========================================================
-//
-// Includes:
-// GET    /api/admin/songs
-// GET    /api/admin/songs/:id
-// POST   /api/admin/songs
-// PUT    /api/admin/songs/:id
-// DELETE /api/admin/songs/:id
-//
-// Reports:
-// GET    /api/admin/songs/reports
-// =========================================================
 
 app.use(
   "/api/admin/songs",
@@ -614,13 +969,6 @@ app.use(
 
 // =========================================================
 // SONG REPORT ROUTES
-// =========================================================
-//
-// User:
-// POST /api/song-reports
-//
-// Admin reports are handled through:
-// GET /api/admin/songs/reports
 // =========================================================
 
 app.use(
@@ -759,6 +1107,15 @@ async function startServer() {
         );
 
         console.log(
+          `Images: http://localhost:${PORT}/media/images`
+        );
+
+        console.log(
+          "S3 Bucket:",
+          S3_BUCKET_NAME
+        );
+
+        console.log(
           "========================================"
         );
       }
@@ -781,3 +1138,4 @@ async function startServer() {
 // =========================================================
 
 startServer();
+

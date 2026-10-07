@@ -1,8 +1,27 @@
-
 const pool = require("../config/db");
 
-const fs = require("fs");
-const path = require("path");
+const {
+  S3Client,
+  DeleteObjectCommand,
+} = require("@aws-sdk/client-s3");
+
+const {
+  uploadToS3,
+} = require("../middleware/uploadMiddleware");
+
+/* =========================================================
+   S3 CONFIG
+========================================================= */
+
+const s3 = new S3Client({
+  region:
+    process.env.AWS_REGION ||
+    "ap-south-1",
+});
+
+const S3_BUCKET =
+  process.env.S3_BUCKET_NAME ||
+  "keerthana-media-908209635187";
 
 
 /* =========================================================
@@ -62,7 +81,10 @@ const getAdminSongs = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Admin get songs error:", error);
+    console.error(
+      "Admin get songs error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -70,7 +92,6 @@ const getAdminSongs = async (req, res) => {
     });
   }
 };
-
 
 
 /* =========================================================
@@ -90,6 +111,7 @@ const createSong = async (req, res) => {
       ministry_id,
       featured,
     } = req.body;
+
 
     console.log(
       "========== CREATE SONG BODY =========="
@@ -121,14 +143,10 @@ const createSong = async (req, res) => {
       : null;
 
 
-    /*
-      created_by is important for Business Owner statistics.
-
-      Every newly uploaded song will be connected
-      to the admin who uploaded it.
-    */
-
-    if (!createdBy || !Number.isInteger(createdBy)) {
+    if (
+      !createdBy ||
+      !Number.isInteger(createdBy)
+    ) {
       return res.status(401).json({
         success: false,
         message:
@@ -141,7 +159,10 @@ const createSong = async (req, res) => {
        VALIDATE TITLE
     ===================================================== */
 
-    if (!title || !title.trim()) {
+    if (
+      !title ||
+      !title.trim()
+    ) {
       return res.status(400).json({
         success: false,
         message:
@@ -156,6 +177,7 @@ const createSong = async (req, res) => {
 
     const audioFile =
       req.files?.audio?.[0];
+
 
     if (!audioFile) {
       return res.status(400).json({
@@ -175,15 +197,53 @@ const createSong = async (req, res) => {
 
 
     /* =====================================================
+       UPLOAD AUDIO TO S3
+    ===================================================== */
+
+    const uploadedAudio =
+      await uploadToS3(
+        audioFile,
+        "audio"
+      );
+
+
+    if (
+      !uploadedAudio ||
+      !uploadedAudio.filename
+    ) {
+      return res.status(500).json({
+        success: false,
+        message:
+          "Unable to upload audio file",
+      });
+    }
+
+
+    /* =====================================================
+       UPLOAD COVER TO S3
+    ===================================================== */
+
+    const uploadedCover =
+      coverFile
+        ? await uploadToS3(
+            coverFile,
+            "covers"
+          )
+        : null;
+
+
+    /* =====================================================
        MEDIA URLS
+       Keep existing frontend API paths.
     ===================================================== */
 
     const audio_url =
-      `/media/audio/${audioFile.filename}`;
+      `/media/audio/${uploadedAudio.filename}`;
+
 
     const cover_url =
-      coverFile
-        ? `/media/images/${coverFile.filename}`
+      uploadedCover
+        ? `/media/images/${uploadedCover.filename}`
         : null;
 
 
@@ -201,7 +261,9 @@ const createSong = async (req, res) => {
     ===================================================== */
 
     const selectedLanguage =
-      String(language || "Telugu").trim();
+      String(
+        language || "Telugu"
+      ).trim();
 
 
     const allowedLanguages = [
@@ -234,6 +296,7 @@ const createSong = async (req, res) => {
 
     let ministryId = null;
 
+
     if (
       ministry_id !== undefined &&
       ministry_id !== null &&
@@ -242,8 +305,11 @@ const createSong = async (req, res) => {
       ministryId =
         Number(ministry_id);
 
+
       if (
-        !Number.isInteger(ministryId)
+        !Number.isInteger(
+          ministryId
+        )
       ) {
         return res.status(400).json({
           success: false,
@@ -263,10 +329,12 @@ const createSong = async (req, res) => {
         ? Number(artist_id)
         : null;
 
+
     const albumId =
       album_id
         ? Number(album_id)
         : null;
+
 
     const categoryId =
       category_id
@@ -278,7 +346,9 @@ const createSong = async (req, res) => {
        VALIDATE MINISTRY
     ===================================================== */
 
-    if (ministryId !== null) {
+    if (
+      ministryId !== null
+    ) {
 
       const ministryResult =
         await pool.query(
@@ -424,56 +494,112 @@ const createSong = async (req, res) => {
 };
 
 
-
-
 /* =========================================================
-   DELETE MEDIA FILE
+   DELETE MEDIA FILE FROM S3
 ========================================================= */
 
-const deleteMediaFile = (
+const deleteMediaFile = async (
   mediaUrl
 ) => {
+
   try {
+
     if (!mediaUrl) {
       return;
     }
 
 
+    let key = null;
+
+
+    /* -----------------------------------------------------
+       AUDIO
+    ----------------------------------------------------- */
+
     if (
-      !mediaUrl.startsWith(
-        "/media/"
+      mediaUrl.startsWith(
+        "/media/audio/"
       )
     ) {
+
+      const filename =
+        mediaUrl.replace(
+          "/media/audio/",
+          ""
+        );
+
+
+      if (filename) {
+        key =
+          `audio/${filename}`;
+      }
+    }
+
+
+    /* -----------------------------------------------------
+       COVER
+    ----------------------------------------------------- */
+
+    if (
+      mediaUrl.startsWith(
+        "/media/images/"
+      )
+    ) {
+
+      const filename =
+        mediaUrl.replace(
+          "/media/images/",
+          ""
+        );
+
+
+      if (filename) {
+        key =
+          `covers/${filename}`;
+      }
+    }
+
+
+    /* -----------------------------------------------------
+       INVALID MEDIA URL
+    ----------------------------------------------------- */
+
+    if (!key) {
       return;
     }
 
 
-    const relativePath =
-      mediaUrl.replace(
-        "/media/",
-        ""
-      );
+    /* -----------------------------------------------------
+       DELETE FROM S3
+    ----------------------------------------------------- */
+
+    const command =
+      new DeleteObjectCommand({
+        Bucket:
+          S3_BUCKET,
+
+        Key:
+          key,
+      });
 
 
-    const filePath =
-      path.join(
-        __dirname,
-        "../../public",
-        relativePath
-      );
+    await s3.send(
+      command
+    );
 
 
-    if (
-      fs.existsSync(filePath)
-    ) {
-      fs.unlinkSync(filePath);
-    }
+    console.log(
+      `S3 media deleted: ${key}`
+    );
+
 
   } catch (error) {
+
     console.error(
-      "Delete media file error:",
+      "Delete S3 media error:",
       error
     );
+
   }
 };
 
@@ -486,7 +612,9 @@ const deleteSong = async (
   req,
   res
 ) => {
+
   try {
+
     const {
       id,
     } = req.params;
@@ -542,17 +670,26 @@ const deleteSong = async (
 
 
     /* =====================================================
-       DELETE PHYSICAL FILES
+       DELETE S3 AUDIO
     ===================================================== */
 
-    deleteMediaFile(
+    await deleteMediaFile(
       song.audio_url
     );
 
-    deleteMediaFile(
+
+    /* =====================================================
+       DELETE S3 COVER
+    ===================================================== */
+
+    await deleteMediaFile(
       song.cover_url
     );
 
+
+    /* =====================================================
+       SUCCESS
+    ===================================================== */
 
     return res.status(200).json({
       success: true,
@@ -562,6 +699,7 @@ const deleteSong = async (
 
 
   } catch (error) {
+
     console.error(
       "Delete song error:",
       error
@@ -596,7 +734,9 @@ const getAdminSongById = async (
   req,
   res
 ) => {
+
   try {
+
     const {
       id,
     } = req.params;
@@ -671,6 +811,7 @@ const getAdminSongById = async (
 
 
   } catch (error) {
+
     console.error(
       "Get admin song error:",
       error
@@ -694,7 +835,9 @@ const updateSong = async (
   req,
   res
 ) => {
+
   try {
+
     const {
       id,
     } = req.params;
@@ -766,12 +909,18 @@ const updateSong = async (
     const newAudioFile =
       req.files?.audio?.[0];
 
+
     const newCoverFile =
       req.files?.cover?.[0];
 
 
+    /* =====================================================
+       EXISTING MEDIA
+    ===================================================== */
+
     let audioUrl =
       existingSong.audio_url;
+
 
     let coverUrl =
       existingSong.cover_url;
@@ -781,9 +930,32 @@ const updateSong = async (
        REPLACE AUDIO
     ===================================================== */
 
+    let uploadedAudio = null;
+
+
     if (newAudioFile) {
+
+      uploadedAudio =
+        await uploadToS3(
+          newAudioFile,
+          "audio"
+        );
+
+
+      if (
+        !uploadedAudio ||
+        !uploadedAudio.filename
+      ) {
+        return res.status(500).json({
+          success: false,
+          message:
+            "Unable to upload new audio file",
+        });
+      }
+
+
       audioUrl =
-        `/media/audio/${newAudioFile.filename}`;
+        `/media/audio/${uploadedAudio.filename}`;
     }
 
 
@@ -791,9 +963,32 @@ const updateSong = async (
        REPLACE COVER
     ===================================================== */
 
+    let uploadedCover = null;
+
+
     if (newCoverFile) {
+
+      uploadedCover =
+        await uploadToS3(
+          newCoverFile,
+          "covers"
+        );
+
+
+      if (
+        !uploadedCover ||
+        !uploadedCover.filename
+      ) {
+        return res.status(500).json({
+          success: false,
+          message:
+            "Unable to upload new cover file",
+        });
+      }
+
+
       coverUrl =
-        `/media/images/${newCoverFile.filename}`;
+        `/media/images/${uploadedCover.filename}`;
     }
 
 
@@ -812,11 +1007,13 @@ const updateSong = async (
 
     let ministryId = null;
 
+
     if (
       ministry_id !== undefined &&
       ministry_id !== null &&
       ministry_id !== ""
     ) {
+
       ministryId =
         Number(ministry_id);
 
@@ -839,7 +1036,10 @@ const updateSong = async (
        VALIDATE MINISTRY
     ===================================================== */
 
-    if (ministryId !== null) {
+    if (
+      ministryId !== null
+    ) {
+
       const ministryResult =
         await pool.query(
           `
@@ -872,10 +1072,12 @@ const updateSong = async (
         ? Number(artist_id)
         : null;
 
+
     const albumId =
       album_id
         ? Number(album_id)
         : null;
+
 
     const categoryId =
       category_id
@@ -941,7 +1143,7 @@ const updateSong = async (
 
 
     /* =====================================================
-       DELETE OLD AUDIO AFTER SUCCESS
+       DELETE OLD AUDIO FROM S3
     ===================================================== */
 
     if (
@@ -950,14 +1152,15 @@ const updateSong = async (
       existingSong.audio_url !==
         audioUrl
     ) {
-      deleteMediaFile(
+
+      await deleteMediaFile(
         existingSong.audio_url
       );
     }
 
 
     /* =====================================================
-       DELETE OLD COVER AFTER SUCCESS
+       DELETE OLD COVER FROM S3
     ===================================================== */
 
     if (
@@ -966,7 +1169,8 @@ const updateSong = async (
       existingSong.cover_url !==
         coverUrl
     ) {
-      deleteMediaFile(
+
+      await deleteMediaFile(
         existingSong.cover_url
       );
     }
@@ -977,6 +1181,7 @@ const updateSong = async (
     ===================================================== */
 
     return res.status(200).json({
+
       success: true,
 
       message:
@@ -984,10 +1189,12 @@ const updateSong = async (
 
       song:
         result.rows[0],
+
     });
 
 
   } catch (error) {
+
     console.error(
       "Update song error:",
       error
@@ -1022,11 +1229,8 @@ const getAdminSongReports = async (
   req,
   res
 ) => {
-  try {
 
-    /* =====================================================
-       GET REPORTS
-    ===================================================== */
+  try {
 
     const result =
       await pool.query(
@@ -1056,10 +1260,6 @@ const getAdminSongReports = async (
       );
 
 
-    /* =====================================================
-       SUCCESS
-    ===================================================== */
-
     return res.status(200).json({
       success: true,
       count: result.rows.length,
@@ -1083,6 +1283,7 @@ const getAdminSongReports = async (
   }
 };
 
+
 /* =========================================================
    UPDATE SONG REPORT STATUS - ADMIN
 ========================================================= */
@@ -1097,6 +1298,7 @@ const updateSongReportStatus = async (
     const {
       id,
     } = req.params;
+
 
     const {
       status,
@@ -1344,7 +1546,6 @@ const deleteSongReport = async (
   }
 
 };
-
 
 
 /* =========================================================
