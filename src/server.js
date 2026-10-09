@@ -70,6 +70,9 @@ const songReportRoutes = require("./routes/songReportRoutes");
 
 const notificationRoutes = require("./routes/notificationRoutes");
 
+
+const ownerMusicRoutes =
+  require("./routes/ownerMusicRoutes");
 // =========================================================
 // OWNER MUSIC ROUTES
 // =========================================================
@@ -895,6 +898,15 @@ app.use(
   statisticsRoutes
 );
 
+
+// =========================================================
+// USER PROFILE ROUTES
+// =========================================================
+
+app.use(
+  "/api/users",
+  userRoutes
+);
 // =========================================================
 // USER PROFILE ROUTES
 // =========================================================
@@ -985,6 +997,11 @@ app.use(
   notificationRoutes
 );
 
+
+app.use(
+  "/api/owner/music",
+  ownerMusicRoutes
+);
 // =========================================================
 // OWNER MUSIC ROUTES
 // =========================================================
