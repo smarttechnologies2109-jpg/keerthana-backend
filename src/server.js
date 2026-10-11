@@ -58,6 +58,8 @@ const adminCategoryRoutes = require("./routes/adminCategoryRoutes");
 const adminUserRoutes = require("./routes/adminUserRoutes");
 const adminMinistryRoutes = require("./routes/adminMinistryRoutes");
 
+const moodsRoutes = require("./routes/moods");
+
 // =========================================================
 // SONG REPORT ROUTES
 // =========================================================
@@ -1020,6 +1022,8 @@ app.use(
   ownerMusicRoutes
 );
 
+
+app.use("/api/moods", moodsRoutes);
 // =========================================================
 // 404 HANDLER
 // =========================================================
