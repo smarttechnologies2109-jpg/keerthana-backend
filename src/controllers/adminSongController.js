@@ -1,9 +1,21 @@
 
 const pool = require("../config/db");
+const {
+  S3Client,
+  DeleteObjectCommand,
+} = require("@aws-sdk/client-s3");
 
-const fs = require("fs");
-const path = require("path");
+const {
+  uploadToS3,
+} = require("../middleware/uploadMiddleware");
 
+const s3 = new S3Client({
+  region: process.env.AWS_REGION || "ap-south-1",
+});
+
+const BUCKET_NAME =
+  process.env.S3_BUCKET_NAME ||
+  "keerthana-media-908209635187";
 
 /* =========================================================
    GET ALL SONGS - ADMIN
@@ -77,7 +89,11 @@ const getAdminSongs = async (req, res) => {
    CREATE SONG
 ========================================================= */
 
-const createSong = async (req, res) => {
+
+  const createSong = async (req, res) => {
+  let uploadedAudio = null;
+  let uploadedCover = null;
+
   try {
     const {
       title,
@@ -178,13 +194,7 @@ const createSong = async (req, res) => {
        MEDIA URLS
     ===================================================== */
 
-    const audio_url =
-      `/media/audio/${audioFile.filename}`;
-
-    const cover_url =
-      coverFile
-        ? `/media/images/${coverFile.filename}`
-        : null;
+  
 
 
     /* =====================================================
@@ -302,7 +312,25 @@ const createSong = async (req, res) => {
       }
     }
 
+/* =====================================================
+   UPLOAD AUDIO AND COVER TO S3
+===================================================== */
 
+uploadedAudio = await uploadToS3(
+  audioFile,
+  "audio"
+);
+
+uploadedCover = coverFile
+  ? await uploadToS3(coverFile, "covers")
+  : null;
+
+const audio_url =
+  `/media/audio/${uploadedAudio.filename}`;
+
+const cover_url = uploadedCover
+  ? `/media/images/${uploadedCover.filename}`
+  : null;
     /* =====================================================
        INSERT SONG
     ===================================================== */
@@ -398,7 +426,21 @@ const createSong = async (req, res) => {
       error
     );
 
+    if (uploadedAudio) {
+      await deleteS3Object(
+        `/media/audio/${uploadedAudio.filename}`
+      ).catch((err) =>
+        console.error("Audio rollback failed:", err)
+      );
+    }
 
+    if (uploadedCover) {
+      await deleteS3Object(
+        `/media/images/${uploadedCover.filename}`
+      ).catch((err) =>
+        console.error("Cover rollback failed:", err)
+      );
+    }
     /* =====================================================
        FOREIGN KEY ERROR
     ===================================================== */
@@ -430,52 +472,108 @@ const createSong = async (req, res) => {
    DELETE MEDIA FILE
 ========================================================= */
 
-const deleteMediaFile = (
-  mediaUrl
-) => {
+
+/* =========================================================
+   GET S3 KEY FROM MEDIA URL
+========================================================= */
+
+const getS3KeyFromMediaUrl = (mediaUrl) => {
+  if (!mediaUrl || typeof mediaUrl !== "string") {
+    return null;
+  }
+
+  let pathname = mediaUrl;
+
+  if (/^https?:\/\//i.test(mediaUrl)) {
+    try {
+      pathname = new URL(mediaUrl).pathname;
+    } catch {
+      return null;
+    }
+  }
+
+  let match = pathname.match(/^\/media\/audio\/([^/]+)$/);
+
+  if (match) {
+    return `audio/${match[1]}`;
+  }
+
+  match = pathname.match(/^\/media\/images\/([^/]+)$/);
+
+  if (match) {
+    return `covers/${match[1]}`;
+  }
+
+  match = pathname.match(/^\/audio\/([^/]+)$/);
+
+  if (match) {
+    return `audio/${match[1]}`;
+  }
+
+  match = pathname.match(/^\/covers\/([^/]+)$/);
+
+  if (match) {
+    return `covers/${match[1]}`;
+  }
+
+  return null;
+};
+
+
+/* =========================================================
+   DELETE OBJECT FROM S3
+========================================================= */
+
+const deleteS3Object = async (mediaUrl) => {
+  const key = getS3KeyFromMediaUrl(mediaUrl);
+
+  if (!key) {
+    return;
+  }
+
+  await s3.send(
+    new DeleteObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: key,
+    })
+  );
+
+  console.log("S3 object deleted:", key);
+};
+
+
+/* =========================================================
+   DELETE MEDIA ONLY WHEN NO SONG USES IT
+========================================================= */
+
+const deleteMediaIfUnused = async (mediaUrl) => {
+  if (!mediaUrl) {
+    return;
+  }
+
   try {
-    if (!mediaUrl) {
-      return;
-    }
-
-
-    if (
-      !mediaUrl.startsWith(
-        "/media/"
-      )
-    ) {
-      return;
-    }
-
-
-    const relativePath =
-      mediaUrl.replace(
-        "/media/",
-        ""
-      );
-
-
-    const filePath =
-      path.join(
-        __dirname,
-        "../../public",
-        relativePath
-      );
-
-
-    if (
-      fs.existsSync(filePath)
-    ) {
-      fs.unlinkSync(filePath);
-    }
-
-  } catch (error) {
-    console.error(
-      "Delete media file error:",
-      error
+    const result = await pool.query(
+      `
+      SELECT 1
+      FROM songs
+      WHERE audio_url = $1
+         OR cover_url = $1
+      LIMIT 1
+      `,
+      [mediaUrl]
     );
+
+    if (result.rows.length > 0) {
+      console.log("Media still in use; keeping:", mediaUrl);
+      return;
+    }
+
+    await deleteS3Object(mediaUrl);
+  } catch (error) {
+    console.error("S3 media cleanup failed:", error);
   }
 };
+
 
 
 /* =========================================================
@@ -544,14 +642,8 @@ const deleteSong = async (
     /* =====================================================
        DELETE PHYSICAL FILES
     ===================================================== */
-
-    deleteMediaFile(
-      song.audio_url
-    );
-
-    deleteMediaFile(
-      song.cover_url
-    );
+await deleteMediaIfUnused(song.audio_url);
+await deleteMediaIfUnused(song.cover_url);
 
 
     return res.status(200).json({
@@ -690,15 +782,14 @@ const getAdminSongById = async (
    UPDATE SONG
 ========================================================= */
 
-const updateSong = async (
-  req,
-  res
-) => {
-  try {
-    const {
-      id,
-    } = req.params;
 
+const updateSong = async (req, res) => {
+  let uploadedAudio = null;
+  let uploadedCover = null;
+  let databaseUpdated = false;
+
+  try {
+    const { id } = req.params;
 
     const {
       title,
@@ -712,291 +803,215 @@ const updateSong = async (
       featured,
     } = req.body;
 
+    // Get existing song
+    const existingResult = await pool.query(
+      `SELECT * FROM songs WHERE id = $1`,
+      [id]
+    );
 
-    /* =====================================================
-       CHECK EXISTING SONG
-    ===================================================== */
-
-    const existingResult =
-      await pool.query(
-        `
-        SELECT *
-        FROM songs
-        WHERE id = $1
-        `,
-        [id]
-      );
-
-
-    if (
-      existingResult.rows.length === 0
-    ) {
+    if (existingResult.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message:
-          "Song not found",
+        message: "Song not found",
       });
     }
 
+    const existingSong = existingResult.rows[0];
 
-    const existingSong =
-      existingResult.rows[0];
-
-
-    /* =====================================================
-       VALIDATE TITLE
-    ===================================================== */
-
-    if (
-      !title ||
-      !title.trim()
-    ) {
+    // Validate title
+    if (typeof title !== "string" || !title.trim()) {
       return res.status(400).json({
         success: false,
-        message:
-          "Song title is required",
+        message: "Song title is required",
       });
     }
 
+    // Find newly uploaded files
+    const newAudioFile = req.files?.audio?.[0] || null;
+    const newCoverFile = req.files?.cover?.[0] || null;
 
-    /* =====================================================
-       NEW FILES
-    ===================================================== */
+    // Validate language
+    const selectedLanguage = String(
+      language || existingSong.language || "Telugu"
+    ).trim();
 
-    const newAudioFile =
-      req.files?.audio?.[0];
+    const allowedLanguages = [
+      "Telugu",
+      "Hindi",
+      "English",
+      "Malayalam",
+      "Kannada",
+      "Tamil",
+    ];
 
-    const newCoverFile =
-      req.files?.cover?.[0];
+    if (!allowedLanguages.includes(selectedLanguage)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid song language",
+        allowedLanguages,
+      });
+    }
 
+    // Preserve existing media unless new files are uploaded
+    let audioUrl = existingSong.audio_url;
+    let coverUrl = existingSong.cover_url;
 
-    let audioUrl =
-      existingSong.audio_url;
-
-    let coverUrl =
-      existingSong.cover_url;
-
-
-    /* =====================================================
-       REPLACE AUDIO
-    ===================================================== */
-
+    // Upload new audio to S3 when provided
     if (newAudioFile) {
-      audioUrl =
-        `/media/audio/${newAudioFile.filename}`;
+      uploadedAudio = await uploadToS3(newAudioFile, "audio");
+      audioUrl = `/media/audio/${uploadedAudio.filename}`;
     }
 
-
-    /* =====================================================
-       REPLACE COVER
-    ===================================================== */
-
+    // Upload new cover to S3 when provided
     if (newCoverFile) {
-      coverUrl =
-        `/media/images/${newCoverFile.filename}`;
+      uploadedCover = await uploadToS3(newCoverFile, "covers");
+      coverUrl = `/media/images/${uploadedCover.filename}`;
     }
 
-
-    /* =====================================================
-       FEATURED
-    ===================================================== */
-
-    const isFeatured =
-      featured === true ||
-      featured === "true";
-
-
-    /* =====================================================
-       MINISTRY ID
-    ===================================================== */
-
-    let ministryId = null;
-
-    if (
-      ministry_id !== undefined &&
-      ministry_id !== null &&
-      ministry_id !== ""
-    ) {
-      ministryId =
-        Number(ministry_id);
-
-
-      if (
-        !Number.isInteger(
-          ministryId
-        )
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Invalid ministry",
-        });
-      }
-    }
-
-
-    /* =====================================================
-       VALIDATE MINISTRY
-    ===================================================== */
-
-    if (ministryId !== null) {
-      const ministryResult =
-        await pool.query(
-          `
-          SELECT id
-          FROM ministries
-          WHERE id = $1
-          `,
-          [ministryId]
-        );
-
-
-      if (
-        ministryResult.rows.length === 0
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Selected ministry does not exist",
-        });
-      }
-    }
-
-
-    /* =====================================================
-       OPTIONAL FOREIGN KEYS
-    ===================================================== */
-
+    // Preserve existing optional IDs if omitted
     const artistId =
-      artist_id
-        ? Number(artist_id)
-        : null;
+      artist_id === undefined
+        ? existingSong.artist_id
+        : artist_id === ""
+          ? null
+          : Number(artist_id);
 
     const albumId =
-      album_id
-        ? Number(album_id)
-        : null;
+      album_id === undefined
+        ? existingSong.album_id
+        : album_id === ""
+          ? null
+          : Number(album_id);
 
     const categoryId =
-      category_id
-        ? Number(category_id)
-        : null;
+      category_id === undefined
+        ? existingSong.category_id
+        : category_id === ""
+          ? null
+          : Number(category_id);
 
+    let ministryId =
+      ministry_id === undefined
+        ? existingSong.ministry_id
+        : ministry_id === ""
+          ? null
+          : Number(ministry_id);
 
-    /* =====================================================
-       UPDATE DATABASE
-    ===================================================== */
-
-    const result =
-      await pool.query(
-        `
-        UPDATE songs
-
-        SET
-          title = $1,
-          title_english = $2,
-          language = $3,
-          lyrics = $4,
-          audio_url = $5,
-          cover_url = $6,
-          artist_id = $7,
-          album_id = $8,
-          category_id = $9,
-          featured = $10,
-          ministry_id = $11
-
-        WHERE id = $12
-
-        RETURNING *
-        `,
-        [
-          title.trim(),
-
-          title_english?.trim() ||
-            null,
-
-          language ||
-            "Telugu",
-
-          lyrics ||
-            null,
-
-          audioUrl,
-
-          coverUrl,
-
-          artistId,
-
-          albumId,
-
-          categoryId,
-
-          isFeatured,
-
-          ministryId,
-
-          id,
-        ]
-      );
-
-
-    /* =====================================================
-       DELETE OLD AUDIO AFTER SUCCESS
-    ===================================================== */
-
-    if (
-      newAudioFile &&
-      existingSong.audio_url &&
-      existingSong.audio_url !==
-        audioUrl
-    ) {
-      deleteMediaFile(
-        existingSong.audio_url
-      );
+    // Validate optional IDs
+    for (const [field, value] of [
+      ["artist_id", artistId],
+      ["album_id", albumId],
+      ["category_id", categoryId],
+      ["ministry_id", ministryId],
+    ]) {
+      if (value !== null &&
+          (!Number.isInteger(value) || value <= 0)) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid ${field}`,
+        });
+      }
     }
 
-
-    /* =====================================================
-       DELETE OLD COVER AFTER SUCCESS
-    ===================================================== */
-
-    if (
-      newCoverFile &&
-      existingSong.cover_url &&
-      existingSong.cover_url !==
-        coverUrl
-    ) {
-      deleteMediaFile(
-        existingSong.cover_url
+    // Validate ministry
+    if (ministryId !== null) {
+      const ministryResult = await pool.query(
+        `SELECT id FROM ministries WHERE id = $1`,
+        [ministryId]
       );
+
+      if (ministryResult.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Selected ministry does not exist",
+        });
+      }
     }
 
+    // Preserve featured value when omitted
+    const isFeatured =
+      featured === undefined
+        ? existingSong.featured
+        : featured === true || featured === "true";
 
-    /* =====================================================
-       SUCCESS
-    ===================================================== */
+    // Update database
+    const result = await pool.query(
+      `
+      UPDATE songs
+      SET
+        title = $1,
+        title_english = $2,
+        language = $3,
+        lyrics = $4,
+        audio_url = $5,
+        cover_url = $6,
+        artist_id = $7,
+        album_id = $8,
+        category_id = $9,
+        featured = $10,
+        ministry_id = $11
+      WHERE id = $12
+      RETURNING *
+      `,
+      [
+        title.trim(),
+        title_english === undefined
+          ? existingSong.title_english
+          : title_english?.trim() || null,
+        selectedLanguage,
+        lyrics === undefined ? existingSong.lyrics : lyrics || null,
+        audioUrl,
+        coverUrl,
+        artistId,
+        albumId,
+        categoryId,
+        isFeatured,
+        ministryId,
+        id,
+      ]
+    );
+
+    databaseUpdated = true;
+
+    // Delete old files only after database update succeeds
+    if (newAudioFile &&
+        existingSong.audio_url &&
+        existingSong.audio_url !== audioUrl) {
+      await deleteMediaIfUnused(existingSong.audio_url);
+    }
+
+    if (newCoverFile &&
+        existingSong.cover_url &&
+        existingSong.cover_url !== coverUrl) {
+      await deleteMediaIfUnused(existingSong.cover_url);
+    }
 
     return res.status(200).json({
       success: true,
-
-      message:
-        "Song updated successfully",
-
-      song:
-        result.rows[0],
+      message: "Song updated successfully",
+      song: result.rows[0],
     });
-
-
   } catch (error) {
-    console.error(
-      "Update song error:",
-      error
-    );
+    console.error("Update song error:", error);
 
+    // Remove newly uploaded files if the database update failed
+    if (!databaseUpdated && uploadedAudio) {
+      await deleteS3Object(
+        `/media/audio/${uploadedAudio.filename}`
+      ).catch((err) =>
+        console.error("Audio rollback failed:", err)
+      );
+    }
 
-    if (
-      error.code === "23503"
-    ) {
+    if (!databaseUpdated && uploadedCover) {
+      await deleteS3Object(
+        `/media/images/${uploadedCover.filename}`
+      ).catch((err) =>
+        console.error("Cover rollback failed:", err)
+      );
+    }
+
+    if (error.code === "23503") {
       return res.status(400).json({
         success: false,
         message:
@@ -1004,14 +1019,13 @@ const updateSong = async (
       });
     }
 
-
     return res.status(500).json({
       success: false,
-      message:
-        "Unable to update song",
+      message: "Unable to update song",
     });
   }
 };
+
 
 
 /* =========================================================
