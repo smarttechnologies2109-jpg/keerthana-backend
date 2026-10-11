@@ -118,21 +118,26 @@ console.log("========================================");
 // CORS
 // =========================================================
 
+
+
 const corsOptions = {
   origin: [
+    // Local development
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+
+    // Keerthana website
+    "https://keerthana.co",
+    "https://www.keerthana.co",
+
+    // Existing Amplify website
     "https://main.d2g46r2zbmr5co.amplifyapp.com",
-  
 
-  // Capacitor Android app
-"https://localhost",
-"capacitor://localhost",
-"http://localhost",
-
-],
-
-
+    // Capacitor Android app
+    "https://localhost",
+    "capacitor://localhost",
+    "http://localhost",
+  ],
 
   methods: [
     "GET",
@@ -150,6 +155,7 @@ const corsOptions = {
 
   credentials: true,
 };
+
 
 // =========================================================
 // CORS MIDDLEWARE
