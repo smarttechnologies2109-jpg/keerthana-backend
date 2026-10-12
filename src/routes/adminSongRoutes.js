@@ -102,22 +102,33 @@ router.get(
    CREATE SONG
 ========================================================= */
 
+
+/* =========================================================
+   CREATE SONG
+========================================================= */
+
 router.post(
   "/",
   authMiddleware,
   adminOnly,
   upload.fields([
-    {
-      name: "audio",
-      maxCount: 1,
-    },
-    {
-      name: "cover",
-      maxCount: 1,
-    },
+    { name: "audio", maxCount: 1 },
+    { name: "cover", maxCount: 1 },
   ]),
+  (req, res, next) => {
+    console.log("CREATE SONG UPLOAD DEBUG:", {
+      contentType: req.headers["content-type"],
+      bodyFields: Object.keys(req.body || {}),
+      fileFields: Object.keys(req.files || {}),
+      audioCount: req.files?.audio?.length || 0,
+      coverCount: req.files?.cover?.length || 0,
+    });
+
+    next();
+  },
   createSong
 );
+
 
 
 /* =========================================================
