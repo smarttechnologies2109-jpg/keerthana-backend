@@ -58,7 +58,7 @@ const adminCategoryRoutes = require("./routes/adminCategoryRoutes");
 const adminUserRoutes = require("./routes/adminUserRoutes");
 const adminMinistryRoutes = require("./routes/adminMinistryRoutes");
 
-const moodsRoutes = require("./routes/moods");
+const moodsRoutes = require("./routes/moodsRoutes");
 
 // =========================================================
 // SONG REPORT ROUTES
