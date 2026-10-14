@@ -1,27 +1,18 @@
-
 const express = require("express");
-
-const {
-  authMiddleware,
-} = require("../middleware/authMiddleware");
+const router = express.Router();
 
 const {
   getNotifications,
-} = require("../controllers/notificationController");
+  markAsRead,
+  markAllAsRead,
+} = require("../controllers/notificationsController");
 
-const router = express.Router();
+// Replace require path/name below with your existing
+// authentication middleware.
+const { protect } = require("../middleware/authMiddleware");
 
-/* =========================================================
-   GET NOTIFICATIONS
-
-   GET /api/notifications
-========================================================= */
-
-router.get(
-  "/",
-  authMiddleware,
-  getNotifications
-);
+router.get("/", protect, getNotifications);
+router.post("/read-all", protect, markAllAsRead);
+router.post("/:id/read", protect, markAsRead);
 
 module.exports = router;
-
