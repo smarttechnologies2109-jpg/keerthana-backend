@@ -17,6 +17,60 @@ const BUCKET_NAME =
   process.env.S3_BUCKET_NAME ||
   "keerthana-media-908209635187";
 
+
+  const ALLOWED_MOODS = [
+  "worship",
+  "praise",
+  "prayer",
+  "hope",
+  "peace",
+  "thanksgiving",
+];
+
+const parseSongMoods = (value, fallback = []) => {
+  // Preserve existing moods when an update omits this field.
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (value === null || value === "") {
+    return [];
+  }
+
+  let moods = value;
+
+  // FormData sends the moods array as a JSON string.
+  if (typeof moods === "string") {
+    try {
+      moods = JSON.parse(moods);
+    } catch {
+      throw new Error("Moods must be a valid JSON array");
+    }
+  }
+
+  if (!Array.isArray(moods)) {
+    throw new Error("Moods must be an array");
+  }
+
+  const normalized = [
+    ...new Set(
+      moods.map((mood) =>
+        String(mood).trim().toLowerCase()
+      )
+    ),
+  ];
+
+  if (
+    normalized.some(
+      (mood) => !ALLOWED_MOODS.includes(mood)
+    )
+  ) {
+    throw new Error("One or more selected moods are invalid");
+  }
+
+  return normalized;
+};
+
 /* =========================================================
    GET ALL SONGS - ADMIN
 ========================================================= */
@@ -34,6 +88,7 @@ const getAdminSongs = async (req, res) => {
         s.cover_url,
         s.duration,
         s.featured,
+        s.moods,
         s.created_at,
 
         s.artist_id,
@@ -105,6 +160,7 @@ const getAdminSongs = async (req, res) => {
       category_id,
       ministry_id,
       featured,
+       moods,
     } = req.body;
 
     console.log(
@@ -236,7 +292,16 @@ const getAdminSongs = async (req, res) => {
         allowedLanguages,
       });
     }
+let songMoods;
 
+try {
+  songMoods = parseSongMoods(moods, []);
+} catch (error) {
+  return res.status(400).json({
+    success: false,
+    message: error.message,
+  });
+}
 
     /* =====================================================
        MINISTRY ID
@@ -351,6 +416,7 @@ const cover_url = uploadedCover
           category_id,
           featured,
           ministry_id,
+          moods,
           created_by
         )
 
@@ -367,7 +433,8 @@ const cover_url = uploadedCover
           $9,
           $10,
           $11,
-          $12
+          $12,
+          $13
         )
 
         RETURNING *
@@ -396,6 +463,8 @@ const cover_url = uploadedCover
           isFeatured,
 
           ministryId,
+
+          songMoods,
 
           createdBy,
         ]
@@ -800,6 +869,7 @@ const updateSong = async (req, res) => {
       album_id,
       category_id,
       ministry_id,
+       moods,
       featured,
     } = req.body;
 
@@ -825,7 +895,21 @@ const updateSong = async (req, res) => {
         message: "Song title is required",
       });
     }
+    
 
+    let songMoods;
+
+try {
+  songMoods = parseSongMoods(
+    moods,
+    existingSong.moods || []
+  );
+} catch (error) {
+  return res.status(400).json({
+    success: false,
+    message: error.message,
+  });
+}
     // Find newly uploaded files
     const newAudioFile = req.files?.audio?.[0] || null;
     const newCoverFile = req.files?.cover?.[0] || null;
@@ -949,8 +1033,9 @@ const updateSong = async (req, res) => {
         album_id = $8,
         category_id = $9,
         featured = $10,
-        ministry_id = $11
-      WHERE id = $12
+        ministry_id = $11,
+        moods = $12
+      WHERE id = $13
       RETURNING *
       `,
       [
