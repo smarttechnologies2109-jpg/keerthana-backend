@@ -5,7 +5,7 @@ const {
   getNotifications,
   markAsRead,
   markAllAsRead,
-} = require("../controllers/notificationsController");
+} = require("../controllers/notificationController");
 
 // Replace require path/name below with your existing
 // authentication middleware.
