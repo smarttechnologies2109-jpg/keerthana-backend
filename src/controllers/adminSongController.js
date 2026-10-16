@@ -294,11 +294,22 @@ console.log("MOODS TO SAVE:", songMoods);
         allowedLanguages,
       });
     }
-let songMoods;
+
+    let songMoods;
 
 try {
   songMoods = parseSongMoods(moods, []);
+
+  console.log("========== MOOD DEBUG ==========");
+  console.log("MOODS RECEIVED:", moods);
+  console.log("MOODS TO SAVE:", songMoods);
+  console.log("MOODS TYPE:", typeof songMoods);
+  console.log("MOODS IS ARRAY:", Array.isArray(songMoods));
+  console.log("================================");
+
 } catch (error) {
+  console.error("MOOD PARSING ERROR:", error.message);
+
   return res.status(400).json({
     success: false,
     message: error.message,
