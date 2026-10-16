@@ -910,6 +910,7 @@ try {
     message: error.message,
   });
 }
+console.log("MOODS TO SAVE:", songMoods);
     // Find newly uploaded files
     const newAudioFile = req.files?.audio?.[0] || null;
     const newCoverFile = req.files?.cover?.[0] || null;
