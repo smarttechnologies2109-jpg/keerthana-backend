@@ -17,12 +17,9 @@ const {
   adminOnly,
 } = require("../middleware/authMiddleware");
 
-const upload = require(
-  "../middleware/uploadMiddleware"
-);
+const upload = require("../middleware/uploadMiddleware");
 
 const router = express.Router();
-
 
 /* =========================================================
    GET ALL SONGS
@@ -35,7 +32,6 @@ router.get(
   getAdminSongs
 );
 
-
 /* =========================================================
    GET ALL SONG REPORTS - ADMIN
 ========================================================= */
@@ -47,21 +43,8 @@ router.get(
   getAdminSongReports
 );
 
-
 /* =========================================================
    UPDATE SONG REPORT STATUS - ADMIN
-
-   PUT /api/admin/songs/reports/:id
-
-   Body:
-   {
-     "status": "pending"
-   }
-
-   Allowed:
-   pending
-   resolved
-   rejected
 ========================================================= */
 
 router.put(
@@ -71,11 +54,8 @@ router.put(
   updateSongReportStatus
 );
 
-
 /* =========================================================
    DELETE SONG REPORT - ADMIN
-
-   DELETE /api/admin/songs/reports/:id
 ========================================================= */
 
 router.delete(
@@ -84,7 +64,6 @@ router.delete(
   adminOnly,
   deleteSongReport
 );
-
 
 /* =========================================================
    GET ONE SONG
@@ -97,28 +76,30 @@ router.get(
   getAdminSongById
 );
 
-
 /* =========================================================
    CREATE SONG
-========================================================= */
-
-
-/* =========================================================
-   CREATE SONG
+   POST /api/admin/songs
 ========================================================= */
 
 router.post(
   "/",
   authMiddleware,
   adminOnly,
+
   upload.fields([
     { name: "audio", maxCount: 1 },
     { name: "cover", maxCount: 1 },
   ]),
+
   (req, res, next) => {
     console.log("CREATE SONG UPLOAD DEBUG:", {
       contentType: req.headers["content-type"],
       bodyFields: Object.keys(req.body || {}),
+
+      // Mood debugging
+      moods: req.body?.moods,
+      moodsType: typeof req.body?.moods,
+
       fileFields: Object.keys(req.files || {}),
       audioCount: req.files?.audio?.length || 0,
       coverCount: req.files?.cover?.length || 0,
@@ -126,10 +107,9 @@ router.post(
 
     next();
   },
+
   createSong
 );
-
-
 
 /* =========================================================
    UPDATE SONG
@@ -139,19 +119,14 @@ router.put(
   "/:id",
   authMiddleware,
   adminOnly,
+
   upload.fields([
-    {
-      name: "audio",
-      maxCount: 1,
-    },
-    {
-      name: "cover",
-      maxCount: 1,
-    },
+    { name: "audio", maxCount: 1 },
+    { name: "cover", maxCount: 1 },
   ]),
+
   updateSong
 );
-
 
 /* =========================================================
    DELETE SONG
@@ -163,6 +138,5 @@ router.delete(
   adminOnly,
   deleteSong
 );
-
 
 module.exports = router;
