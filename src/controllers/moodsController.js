@@ -35,16 +35,24 @@ const getMoodSongs = async (req, res) => {
 
     const result = await db.query(
       `
-      SELECT s.*
-      FROM songs AS s
-      WHERE EXISTS (
-        SELECT 1
-        FROM unnest(
-          COALESCE(s.moods, ARRAY[]::text[])
-        ) AS item(value)
-        WHERE LOWER(TRIM(item.value)) = $1
-      )
-      ORDER BY s.title ASC
+   SELECT
+    s.*,
+    ar.name AS artist_name,
+    ar.image_url AS artist_image,
+    al.title AS album_title,
+    al.cover_url AS album_cover,
+    c.name AS category_name
+FROM songs s
+LEFT JOIN artists ar ON s.artist_id = ar.id
+LEFT JOIN albums al ON s.album_id = al.id
+LEFT JOIN categories c ON s.category_id = c.id
+WHERE EXISTS (
+    SELECT 1
+    FROM unnest(COALESCE(s.moods, ARRAY[]::text[]))
+         AS item(value)
+    WHERE LOWER(TRIM(item.value)) = $1
+)
+ORDER BY s.created_at DESC, s.id DESC;
       `,
       [mood]
     );

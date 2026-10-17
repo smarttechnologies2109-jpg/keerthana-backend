@@ -1,52 +1,43 @@
-
 const pool = require("../config/db");
+
 const {
   S3Client,
   DeleteObjectCommand,
-  GetObjectCommand,
 } = require("@aws-sdk/client-s3");
-
-const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const {
   uploadToS3,
 } = require("../middleware/uploadMiddleware");
 
-const s3 = new S3Client({
-  region: process.env.AWS_REGION || "ap-south-1",
-});
+/* =========================================================
+   AWS S3 CONFIGURATION
+========================================================= */
+
+const AWS_REGION =
+  process.env.AWS_REGION || "ap-south-1";
 
 const BUCKET_NAME =
   process.env.S3_BUCKET_NAME ||
   "keerthana-media-908209635187";
-const getPresignedMediaUrl = async (mediaUrl) => {
-  if (!mediaUrl) return null;
 
-  try {
-    const parsedUrl = new URL(mediaUrl);
+const s3 = new S3Client({
+  region: AWS_REGION,
+});
 
-    // Extract the object key from an existing S3 URL.
-    const key = decodeURIComponent(
-      parsedUrl.pathname.replace(/^\/+/, "")
-    );
+/* =========================================================
+   CONSTANTS
+========================================================= */
 
-    if (!key) return null;
+const ALLOWED_LANGUAGES = [
+  "Telugu",
+  "Hindi",
+  "English",
+  "Malayalam",
+  "Kannada",
+  "Tamil",
+];
 
-    return await getSignedUrl(
-      s3,
-      new GetObjectCommand({
-        Bucket: BUCKET_NAME,
-        Key: key,
-      }),
-      { expiresIn: 3600 }
-    );
-  } catch (error) {
-    console.error("Failed to sign S3 media URL:", error.message);
-    throw error;
-  }
-};
-
-  const ALLOWED_MOODS = [
+const ALLOWED_MOODS = [
   "worship",
   "praise",
   "prayer",
@@ -55,10 +46,63 @@ const getPresignedMediaUrl = async (mediaUrl) => {
   "thanksgiving",
 ];
 
-const parseSongMoods = (value, fallback = []) => {
-  // Preserve existing moods when an update omits this field.
-  if (value === undefined) {
+/* =========================================================
+   COMMON HELPERS
+========================================================= */
+
+/**
+ * Convert FormData values to a boolean.
+ * Preserves support for multipart/form-data.
+ */
+const parseBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null || value === "") {
     return fallback;
+  }
+
+  return (
+    value === true ||
+    value === "true" ||
+    value === "1" ||
+    value === 1
+  );
+};
+
+/**
+ * Convert optional relationship IDs to positive integers
+ * or null when the field is intentionally cleared.
+ *
+ * If the field is omitted during an update, its existing
+ * database value is preserved by the caller.
+ */
+const parseOptionalId = (value, fieldName) => {
+  if (
+    value === undefined ||
+    value === null ||
+    value === ""
+  ) {
+    return null;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`Invalid ${fieldName}`);
+  }
+
+  return parsed;
+};
+
+/**
+ * Normalize moods consistently for both create and update.
+ *
+ * undefined: use fallback
+ * null / empty string: clear moods
+ * JSON string: parse FormData value
+ * array: normalize, validate, and remove duplicates
+ */
+const parseSongMoods = (value, fallback = []) => {
+  if (value === undefined) {
+    return Array.isArray(fallback) ? fallback : [];
   }
 
   if (value === null || value === "") {
@@ -67,7 +111,6 @@ const parseSongMoods = (value, fallback = []) => {
 
   let moods = value;
 
-  // FormData sends the moods array as a JSON string.
   if (typeof moods === "string") {
     try {
       moods = JSON.parse(moods);
@@ -93,10 +136,278 @@ const parseSongMoods = (value, fallback = []) => {
       (mood) => !ALLOWED_MOODS.includes(mood)
     )
   ) {
-    throw new Error("One or more selected moods are invalid");
+    throw new Error(
+      `Invalid mood selected. Allowed moods: ${ALLOWED_MOODS.join(", ")}`
+    );
   }
 
   return normalized;
+};
+
+/**
+ * Convert the existing uploadToS3 return value into a URL.
+ *
+ * Prefer the URL returned by the existing middleware.
+ * Fall back to an S3 URL only when the middleware returns
+ * an object key.
+ */
+const getS3Url = (result) => {
+  if (!result) {
+    return null;
+  }
+
+  const returnedUrl =
+    result.location ||
+    result.url ||
+    result.audio_url ||
+    result.cover_url;
+
+  if (returnedUrl) {
+    return returnedUrl;
+  }
+
+  if (result.key) {
+    const bucket = result.bucket || BUCKET_NAME;
+
+    return (
+      `https://${bucket}.s3.${AWS_REGION}.amazonaws.com/` +
+      String(result.key)
+        .split("/")
+        .map((part) => encodeURIComponent(part))
+        .join("/")
+    );
+  }
+
+  return null;
+};
+
+/**
+ * Find the S3 key returned by uploadToS3.
+ * Used for cleanup if the database operation fails.
+ */
+const getS3KeyFromUpload = (uploadResult) => {
+  if (!uploadResult) {
+    return null;
+  }
+
+  if (uploadResult.key) {
+    return String(uploadResult.key).replace(/^\/+/, "");
+  }
+
+  const mediaUrl =
+    uploadResult.location ||
+    uploadResult.url ||
+    uploadResult.audio_url ||
+    uploadResult.cover_url;
+
+  if (!mediaUrl || typeof mediaUrl !== "string") {
+    return null;
+  }
+
+  try {
+    const url = new URL(mediaUrl);
+
+    const isS3Url =
+      url.hostname === `${BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com` ||
+      url.hostname === `${BUCKET_NAME}.s3.amazonaws.com` ||
+      url.hostname.endsWith(".amazonaws.com") &&
+        url.hostname.startsWith(`${BUCKET_NAME}.`);
+
+    if (!isS3Url) {
+      // Do not assume a CloudFront or unrelated URL path
+      // is a direct S3 object key during rollback.
+      return null;
+    }
+
+    return decodeURIComponent(
+      url.pathname.replace(/^\/+/, "")
+    );
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Delete a newly uploaded object directly by its known key.
+ */
+const deleteUploadedObject = async (uploadResult) => {
+  const key = getS3KeyFromUpload(uploadResult);
+
+  if (!key) {
+    return;
+  }
+
+  await s3.send(
+    new DeleteObjectCommand({
+      Bucket: uploadResult.bucket || BUCKET_NAME,
+      Key: key,
+    })
+  );
+
+  console.log("Rolled back uploaded S3 object:", key);
+};
+
+/**
+ * Extract keys from the media URL formats currently used
+ * by the application.
+ *
+ * Supported:
+ *   /media/audio/file.mp3
+ *   /media/images/file.jpg
+ *   /audio/file.mp3
+ *   /covers/file.jpg
+ *   direct S3 URLs for this configured bucket
+ */
+const getS3KeyFromMediaUrl = (mediaUrl) => {
+  if (!mediaUrl || typeof mediaUrl !== "string") {
+    return null;
+  }
+
+  let pathname = mediaUrl;
+
+  if (/^https?:\/\//i.test(mediaUrl)) {
+    try {
+      const parsedUrl = new URL(mediaUrl);
+      pathname = parsedUrl.pathname;
+
+      const hostname = parsedUrl.hostname;
+
+      const isS3Url =
+        hostname === `${BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com` ||
+        hostname === `${BUCKET_NAME}.s3.amazonaws.com` ||
+        (
+          hostname.endsWith(".amazonaws.com") &&
+          hostname.startsWith(`${BUCKET_NAME}.`)
+        );
+
+      if (isS3Url) {
+        return decodeURIComponent(
+          pathname.replace(/^\/+/, "")
+        ) || null;
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    pathname = decodeURIComponent(pathname);
+  } catch {
+    // Keep the original pathname if decoding fails.
+  }
+
+  const normalizedPath = pathname.replace(/^\/+/, "");
+
+  const patterns = [
+    /^media\/audio\/(.+)$/,
+    /^media\/images\/(.+)$/,
+    /^audio\/(.+)$/,
+    /^covers\/(.+)$/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalizedPath.match(pattern);
+
+    if (match) {
+      const relativeKey = match[1];
+
+      if (pattern === patterns[0] || pattern === patterns[2]) {
+        return `audio/${relativeKey}`;
+      }
+
+      return `covers/${relativeKey}`;
+    }
+  }
+
+  // Unknown URL format: do not risk deleting an unrelated object.
+  return null;
+};
+
+/**
+ * Delete a media URL from S3 if its key can be identified.
+ */
+const deleteS3Object = async (mediaUrl) => {
+  const key = getS3KeyFromMediaUrl(mediaUrl);
+
+  if (!key) {
+    console.warn(
+      "Unable to identify S3 key; skipping media deletion:",
+      mediaUrl
+    );
+
+    return;
+  }
+
+  await s3.send(
+    new DeleteObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: key,
+    })
+  );
+
+  console.log("S3 object deleted:", key);
+};
+
+/**
+ * Delete media only when no song record still references it.
+ */
+const deleteMediaIfUnused = async (mediaUrl) => {
+  if (!mediaUrl) {
+    return;
+  }
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT 1
+      FROM songs
+      WHERE audio_url = $1
+         OR cover_url = $1
+      LIMIT 1
+      `,
+      [mediaUrl]
+    );
+
+    if (result.rows.length > 0) {
+      console.log(
+        "Media still in use; keeping:",
+        mediaUrl
+      );
+
+      return;
+    }
+
+    await deleteS3Object(mediaUrl);
+  } catch (error) {
+    // Media cleanup must not turn a successful song update
+    // or deletion into a failed API response.
+    console.error("S3 media cleanup failed:", error.message);
+  }
+};
+
+/**
+ * Check whether a referenced record exists.
+ * A null ID means that relationship is optional.
+ */
+const validateOptionalReference = async (
+  tableName,
+  id,
+  fieldName
+) => {
+  if (id === null) {
+    return;
+  }
+
+  // Table names are supplied only by this controller's
+  // fixed internal calls, never by request input.
+  const result = await pool.query(
+    `SELECT id FROM ${tableName} WHERE id = $1 LIMIT 1`,
+    [id]
+  );
+
+  if (result.rows.length === 0) {
+    throw new Error(`Selected ${fieldName} does not exist`);
+  }
 };
 
 /* =========================================================
@@ -155,7 +466,6 @@ const getAdminSongs = async (req, res) => {
       count: result.rows.length,
       songs: result.rows,
     });
-
   } catch (error) {
     console.error("Admin get songs error:", error);
 
@@ -166,29 +476,16 @@ const getAdminSongs = async (req, res) => {
   }
 };
 
-
-
 /* =========================================================
    CREATE SONG
 ========================================================= */
 
-
-  const createSong = async (req, res) => {
+const createSong = async (req, res) => {
   let uploadedAudio = null;
   let uploadedCover = null;
+  let databaseSaved = false;
 
   try {
-    console.log("========== CREATE SONG START ==========");
-    console.log("Request body:", {
-      ...req.body,
-      lyrics: req.body?.lyrics ? "[provided]" : "",
-    });
-
-    console.log(
-      "Uploaded file fields:",
-      Object.keys(req.files || {})
-    );
-
     const {
       title,
       title_english,
@@ -201,10 +498,6 @@ const getAdminSongs = async (req, res) => {
       featured = false,
       moods = [],
     } = req.body || {};
-
-    // -----------------------------------------
-    // 1. VALIDATE REQUIRED FIELDS
-    // -----------------------------------------
 
     if (!title || !String(title).trim()) {
       return res.status(400).json({
@@ -222,161 +515,83 @@ const getAdminSongs = async (req, res) => {
       });
     }
 
-    const allowedLanguages = [
-      "Telugu",
-      "Hindi",
-      "English",
-      "Malayalam",
-      "Kannada",
-      "Tamil",
-    ];
-
-    if (!allowedLanguages.includes(language)) {
+    if (!ALLOWED_LANGUAGES.includes(language)) {
       return res.status(400).json({
         success: false,
         message: "Invalid song language",
+        allowedLanguages: ALLOWED_LANGUAGES,
       });
     }
 
-    // -----------------------------------------
-    // 2. VALIDATE AND NORMALIZE MOODS
-    // -----------------------------------------
-
-    const ALLOWED_MOODS = [
-      "worship",
-      "praise",
-      "prayer",
-      "hope",
-      "peace",
-      "thanksgiving",
-    ];
-
-    let songMoods = [];
+    let songMoods;
 
     try {
-      let parsedMoods = moods;
-
-      if (typeof parsedMoods === "string") {
-        parsedMoods = parsedMoods.trim()
-          ? JSON.parse(parsedMoods)
-          : [];
-      }
-
-      if (!Array.isArray(parsedMoods)) {
-        throw new Error("Moods must be an array");
-      }
-
-      songMoods = [
-        ...new Set(
-          parsedMoods.map((mood) =>
-            String(mood).trim().toLowerCase()
-          )
-        ),
-      ];
-
-      if (
-        songMoods.some(
-          (mood) => !ALLOWED_MOODS.includes(mood)
-        )
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid mood selected",
-          allowedMoods: ALLOWED_MOODS,
-        });
-      }
+      songMoods = parseSongMoods(moods, []);
     } catch (error) {
       return res.status(400).json({
         success: false,
-        message: "Invalid moods format. Please select moods again.",
+        message: error.message,
+        allowedMoods: ALLOWED_MOODS,
       });
     }
 
-    console.log("MOODS TO SAVE:", songMoods);
+    let artistId;
+    let albumId;
+    let categoryId;
+    let ministryId;
 
-    // -----------------------------------------
-    // 3. GET USER ID
-    // -----------------------------------------
-
-    const createdBy = req.user?.id || null;
-
-    // -----------------------------------------
-    // 4. UPLOAD AUDIO AND COVER
-    // -----------------------------------------
-    //
-    // Keep the uploadToS3 arguments and return format
-    // consistent with your existing uploadMiddleware.js.
-    // Do not assume an upload succeeded unless it returns.
-    // -----------------------------------------
-
-    const audioResult = await uploadToS3(
-      audioFile,
-      "audio"
-    );
-
-    if (!audioResult) {
-      throw new Error("Audio upload did not return a result");
+    try {
+      artistId = parseOptionalId(artist_id, "artist_id");
+      albumId = parseOptionalId(album_id, "album_id");
+      categoryId = parseOptionalId(category_id, "category_id");
+      ministryId = parseOptionalId(ministry_id, "ministry_id");
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+      });
     }
 
-    uploadedAudio = audioResult;
+    /*
+     * Keep each relationship optional and independently
+     * selectable. Do not infer one ID from another.
+     *
+     * Existing database foreign keys still apply.
+     */
+    const createdBy = req.user?.id || null;
+
+    uploadedAudio = await uploadToS3(audioFile, "audio");
+
+    if (!uploadedAudio) {
+      throw new Error("Audio upload did not return a result");
+    }
 
     const coverFile = req.files?.cover?.[0];
 
     if (coverFile) {
-      const coverResult = await uploadToS3(
+      uploadedCover = await uploadToS3(
         coverFile,
         "covers"
       );
 
-      if (!coverResult) {
+      if (!uploadedCover) {
         throw new Error("Cover upload did not return a result");
       }
-
-      uploadedCover = coverResult;
     }
 
-    // Use the media URL returned by your existing S3 helper.
-   
-const getS3Url = (result) => {
-  if (!result) return null;
-
-  if (result.location || result.url || result.audio_url || result.cover_url) {
-    return (
-      result.location ||
-      result.url ||
-      result.audio_url ||
-      result.cover_url
-    );
-  }
-
-  if (result.key) {
-    const region = process.env.AWS_REGION || "ap-south-1";
-
-    return `https://${result.bucket || BUCKET_NAME}.s3.${region}.amazonaws.com/${result.key}`;
-  }
-
-  return null;
-};
-
-const audioUrl = getS3Url(audioResult);
-const coverUrl = coverFile ? getS3Url(uploadedCover) : null;
-
-if (!audioUrl) {
-  throw new Error("Could not generate the S3 audio URL.");
-}
-
+    const audioUrl = getS3Url(uploadedAudio);
+    const coverUrl = coverFile
+      ? getS3Url(uploadedCover)
+      : null;
 
     if (!audioUrl) {
       throw new Error(
-        "S3 upload completed but no audio URL was returned. Check uploadMiddleware.js."
+        "Audio upload completed but no audio URL was returned. Check uploadMiddleware.js."
       );
     }
 
-    // -----------------------------------------
-    // 5. INSERT SONG INTO POSTGRESQL
-    // -----------------------------------------
-
-    const sql = `
+    const result = await pool.query(
+      `
       INSERT INTO songs (
         title,
         title_english,
@@ -396,73 +611,70 @@ if (!audioUrl) {
         $1, $2, $3, $4, $5, $6,
         $7, $8, $9, $10, $11, $12, $13
       )
-      RETURNING *;
-    `;
+      RETURNING *
+      `,
+      [
+        String(title).trim(),
+        title_english ? String(title_english).trim() : null,
+        language,
+        lyrics || "",
+        audioUrl,
+        coverUrl,
+        artistId,
+        albumId,
+        categoryId,
+        parseBoolean(featured),
+        ministryId,
+        songMoods,
+        createdBy,
+      ]
+    );
 
-    const values = [
-      String(title).trim(),
-      title_english || null,
-      language,
-      lyrics || "",
-      audioUrl,
-      coverUrl,
-      artist_id || null,
-      album_id || null,
-      category_id || null,
-      featured === true ||
-        featured === "true" ||
-        featured === "1",
-      ministry_id || null,
-      songMoods,
-      createdBy,
-    ];
-
-    const result = await pool.query(sql, values);
-
-    if (!result.rows || result.rows.length === 0) {
-      throw new Error("Song was not returned after database insert");
-    }
-
-    const savedSong = result.rows[0];
-
-    console.log("SONG INSERT SUCCESS:", {
-      id: savedSong.id,
-      title: savedSong.title,
-      moods: savedSong.moods,
-    });
-
-    // -----------------------------------------
-    // 6. SEND SUCCESS RESPONSE
-    // -----------------------------------------
+    databaseSaved = true;
 
     return res.status(201).json({
       success: true,
       message: "Song uploaded successfully",
-      song: savedSong,
+      song: result.rows[0],
     });
   } catch (error) {
-    // -----------------------------------------
-    // 7. LOG THE ACTUAL ERROR
-    // -----------------------------------------
-
-    console.error("CREATE SONG ERROR DETAILS:", {
+    console.error("Create song error:", {
       message: error.message,
       code: error.code,
       detail: error.detail,
       constraint: error.constraint,
-      stack: error.stack,
     });
 
-    // Do not hide the real error in your server logs.
-    // Remove uploaded files here only using your existing
-    // deleteS3Object helper and its verified key format.
+    // Remove uploaded files if the database insert failed.
+    if (!databaseSaved) {
+      if (uploadedAudio) {
+        await deleteUploadedObject(uploadedAudio).catch(
+          (cleanupError) => {
+            console.error(
+              "Audio upload rollback failed:",
+              cleanupError.message
+            );
+          }
+        );
+      }
+
+      if (uploadedCover) {
+        await deleteUploadedObject(uploadedCover).catch(
+          (cleanupError) => {
+            console.error(
+              "Cover upload rollback failed:",
+              cleanupError.message
+            );
+          }
+        );
+      }
+    }
 
     if (error.code === "23503") {
       return res.status(400).json({
         success: false,
         message:
           "Invalid artist, album, category, ministry, or user reference.",
-        detail: error.detail,
       });
     }
 
@@ -470,7 +682,6 @@ if (!audioUrl) {
       return res.status(400).json({
         success: false,
         message: "A required database field is missing.",
-        detail: error.detail,
       });
     }
 
@@ -478,7 +689,6 @@ if (!audioUrl) {
       return res.status(400).json({
         success: false,
         message: "One of the submitted fields has an invalid format.",
-        detail: error.message,
       });
     }
 
@@ -493,198 +703,48 @@ if (!audioUrl) {
   }
 };
 
-
-
-/* =========================================================
-   GET S3 KEY FROM MEDIA URL
-========================================================= */
-
-const getS3KeyFromMediaUrl = (mediaUrl) => {
-  if (!mediaUrl || typeof mediaUrl !== "string") {
-    return null;
-  }
-
-  let pathname = mediaUrl;
-
-  if (/^https?:\/\//i.test(mediaUrl)) {
-    try {
-      pathname = new URL(mediaUrl).pathname;
-    } catch {
-      return null;
-    }
-  }
-
-  let match = pathname.match(/^\/media\/audio\/([^/]+)$/);
-
-  if (match) {
-    return `audio/${match[1]}`;
-  }
-
-  match = pathname.match(/^\/media\/images\/([^/]+)$/);
-
-  if (match) {
-    return `covers/${match[1]}`;
-  }
-
-  match = pathname.match(/^\/audio\/([^/]+)$/);
-
-  if (match) {
-    return `audio/${match[1]}`;
-  }
-
-  match = pathname.match(/^\/covers\/([^/]+)$/);
-
-  if (match) {
-    return `covers/${match[1]}`;
-  }
-
-  return null;
-};
-
-
-/* =========================================================
-   DELETE OBJECT FROM S3
-========================================================= */
-
-const deleteS3Object = async (mediaUrl) => {
-  const key = getS3KeyFromMediaUrl(mediaUrl);
-
-  if (!key) {
-    return;
-  }
-
-  await s3.send(
-    new DeleteObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: key,
-    })
-  );
-
-  console.log("S3 object deleted:", key);
-};
-
-
-/* =========================================================
-   DELETE MEDIA ONLY WHEN NO SONG USES IT
-========================================================= */
-
-const deleteMediaIfUnused = async (mediaUrl) => {
-  if (!mediaUrl) {
-    return;
-  }
-
-  try {
-    const result = await pool.query(
-      `
-      SELECT 1
-      FROM songs
-      WHERE audio_url = $1
-         OR cover_url = $1
-      LIMIT 1
-      `,
-      [mediaUrl]
-    );
-
-    if (result.rows.length > 0) {
-      console.log("Media still in use; keeping:", mediaUrl);
-      return;
-    }
-
-    await deleteS3Object(mediaUrl);
-  } catch (error) {
-    console.error("S3 media cleanup failed:", error);
-  }
-};
-
-
-
 /* =========================================================
    DELETE SONG
 ========================================================= */
 
-const deleteSong = async (
-  req,
-  res
-) => {
+const deleteSong = async (req, res) => {
   try {
-    const {
-      id,
-    } = req.params;
+    const { id } = req.params;
 
-
-    /* =====================================================
-       GET SONG FIRST
-    ===================================================== */
-
-    const songResult =
-      await pool.query(
-        `
-        SELECT
-          id,
-          title,
-          audio_url,
-          cover_url
-
-        FROM songs
-
-        WHERE id = $1
-        `,
-        [id]
-      );
-
-
-    if (
-      songResult.rows.length === 0
-    ) {
-      return res.status(404).json({
-        success: false,
-        message:
-          "Song not found",
-      });
-    }
-
-
-    const song =
-      songResult.rows[0];
-
-
-    /* =====================================================
-       DELETE DATABASE RECORD
-    ===================================================== */
-
-    await pool.query(
+    const songResult = await pool.query(
       `
-      DELETE FROM songs
+      SELECT id, title, audio_url, cover_url
+      FROM songs
       WHERE id = $1
       `,
       [id]
     );
 
+    if (songResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Song not found",
+      });
+    }
 
-    /* =====================================================
-       DELETE PHYSICAL FILES
-    ===================================================== */
-await deleteMediaIfUnused(song.audio_url);
-await deleteMediaIfUnused(song.cover_url);
+    const song = songResult.rows[0];
 
+    await pool.query(
+      `DELETE FROM songs WHERE id = $1`,
+      [id]
+    );
+
+    await deleteMediaIfUnused(song.audio_url);
+    await deleteMediaIfUnused(song.cover_url);
 
     return res.status(200).json({
       success: true,
-      message:
-        "Song deleted successfully",
+      message: "Song deleted successfully",
     });
-
-
   } catch (error) {
-    console.error(
-      "Delete song error:",
-      error
-    );
+    console.error("Delete song error:", error);
 
-
-    if (
-      error.code === "23503"
-    ) {
+    if (error.code === "23503") {
       return res.status(409).json({
         success: false,
         message:
@@ -692,118 +752,91 @@ await deleteMediaIfUnused(song.cover_url);
       });
     }
 
-
     return res.status(500).json({
       success: false,
-      message:
-        "Unable to delete song",
+      message: "Unable to delete song",
     });
   }
 };
-
 
 /* =========================================================
    GET ONE SONG - ADMIN
 ========================================================= */
 
-const getAdminSongById = async (
-  req,
-  res
-) => {
+const getAdminSongById = async (req, res) => {
   try {
-    const {
-      id,
-    } = req.params;
+    const { id } = req.params;
 
+    const result = await pool.query(
+      `
+      SELECT
+        s.id,
+        s.title,
+        s.title_english,
+        s.language,
+        s.lyrics,
+        s.audio_url,
+        s.cover_url,
+        s.duration,
+        s.featured,
+        s.moods,
+        s.created_at,
 
-    const result =
-      await pool.query(
-        `
-        SELECT
-          s.id,
-          s.title,
-          s.title_english,
-          s.language,
-          s.lyrics,
-          s.audio_url,
-          s.cover_url,
-          s.duration,
-          s.featured,
+        s.artist_id,
+        ar.name AS artist_name,
 
-          s.artist_id,
-          s.album_id,
-          s.category_id,
+        s.album_id,
+        al.title AS album_title,
 
-          s.ministry_id,
+        s.category_id,
+        c.name AS category_name,
 
-          s.created_at,
+        s.ministry_id,
+        m.name AS ministry_name
 
-          ar.name AS artist_name,
+      FROM songs s
 
-          al.title AS album_title,
+      LEFT JOIN artists ar
+        ON s.artist_id = ar.id
 
-          c.name AS category_name,
+      LEFT JOIN albums al
+        ON s.album_id = al.id
 
-          m.name AS ministry_name
+      LEFT JOIN categories c
+        ON s.category_id = c.id
 
-        FROM songs s
+      LEFT JOIN ministries m
+        ON s.ministry_id = m.id
 
-        LEFT JOIN artists ar
-          ON s.artist_id = ar.id
+      WHERE s.id = $1
+      `,
+      [id]
+    );
 
-        LEFT JOIN albums al
-          ON s.album_id = al.id
-
-        LEFT JOIN categories c
-          ON s.category_id = c.id
-
-        LEFT JOIN ministries m
-          ON s.ministry_id = m.id
-
-        WHERE s.id = $1
-        `,
-        [id]
-      );
-
-
-    if (
-      result.rows.length === 0
-    ) {
+    if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message:
-          "Song not found",
+        message: "Song not found",
       });
     }
 
-
     return res.status(200).json({
       success: true,
-      song:
-        result.rows[0],
+      song: result.rows[0],
     });
-
-
   } catch (error) {
-    console.error(
-      "Get admin song error:",
-      error
-    );
-
+    console.error("Get admin song error:", error);
 
     return res.status(500).json({
       success: false,
-      message:
-        "Unable to load song",
+      message: "Unable to load song",
     });
   }
 };
 
-
 /* =========================================================
    UPDATE SONG
 ========================================================= */
-
 
 const updateSong = async (req, res) => {
   let uploadedAudio = null;
@@ -822,11 +855,10 @@ const updateSong = async (req, res) => {
       album_id,
       category_id,
       ministry_id,
-       moods,
+      moods,
       featured,
-    } = req.body;
+    } = req.body || {};
 
-    // Get existing song
     const existingResult = await pool.query(
       `SELECT * FROM songs WHERE id = $1`,
       [id]
@@ -841,152 +873,167 @@ const updateSong = async (req, res) => {
 
     const existingSong = existingResult.rows[0];
 
-    // Validate title
+    /*
+     * Preserve the existing update behavior: title is
+     * required by this endpoint.
+     */
     if (typeof title !== "string" || !title.trim()) {
       return res.status(400).json({
         success: false,
         message: "Song title is required",
       });
     }
-    
 
     let songMoods;
 
-try {
-  songMoods = parseSongMoods(
-    moods,
-    existingSong.moods || []
-  );
-} catch (error) {
-  return res.status(400).json({
-    success: false,
-    message: error.message,
-  });
-}
-console.log("MOODS TO SAVE:", songMoods);
-    // Find newly uploaded files
-    const newAudioFile = req.files?.audio?.[0] || null;
-    const newCoverFile = req.files?.cover?.[0] || null;
+    try {
+      songMoods = parseSongMoods(
+        moods,
+        existingSong.moods || []
+      );
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        allowedMoods: ALLOWED_MOODS,
+      });
+    }
 
-    // Validate language
     const selectedLanguage = String(
       language || existingSong.language || "Telugu"
     ).trim();
 
-    const allowedLanguages = [
-      "Telugu",
-      "Hindi",
-      "English",
-      "Malayalam",
-      "Kannada",
-      "Tamil",
-    ];
-
-    if (!allowedLanguages.includes(selectedLanguage)) {
+    if (!ALLOWED_LANGUAGES.includes(selectedLanguage)) {
       return res.status(400).json({
         success: false,
         message: "Invalid song language",
-        allowedLanguages,
+        allowedLanguages: ALLOWED_LANGUAGES,
       });
     }
 
-    // Preserve existing media unless new files are uploaded
+    /*
+     * Preserve existing relationships when a field is
+     * omitted. An empty string explicitly clears that
+     * relationship, if the database column permits NULL.
+     */
+    let artistId;
+    let albumId;
+    let categoryId;
+    let ministryId;
+
+    try {
+      artistId =
+        artist_id === undefined
+          ? existingSong.artist_id
+          : parseOptionalId(artist_id, "artist_id");
+
+      albumId =
+        album_id === undefined
+          ? existingSong.album_id
+          : parseOptionalId(album_id, "album_id");
+
+      categoryId =
+        category_id === undefined
+          ? existingSong.category_id
+          : parseOptionalId(category_id, "category_id");
+
+      ministryId =
+        ministry_id === undefined
+          ? existingSong.ministry_id
+          : parseOptionalId(ministry_id, "ministry_id");
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
+    /*
+     * Validate only references that are supplied or
+     * retained. These checks do not couple one relationship
+     * to another.
+     */
+    try {
+      await validateOptionalReference(
+        "artists",
+        artistId,
+        "artist"
+      );
+
+      await validateOptionalReference(
+        "albums",
+        albumId,
+        "album"
+      );
+
+      await validateOptionalReference(
+        "categories",
+        categoryId,
+        "category"
+      );
+
+      await validateOptionalReference(
+        "ministries",
+        ministryId,
+        "ministry"
+      );
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
+    const newAudioFile = req.files?.audio?.[0] || null;
+    const newCoverFile = req.files?.cover?.[0] || null;
+
+    // Keep existing media unless replacements are provided.
     let audioUrl = existingSong.audio_url;
     let coverUrl = existingSong.cover_url;
 
-    // Upload new audio to S3 when provided
-  if (newAudioFile) {
-  uploadedAudio = await uploadToS3(newAudioFile, "audio");
-
-  if (!uploadedAudio) {
-    throw new Error("Audio upload failed.");
-  }
-
-  const region = process.env.AWS_REGION || "ap-south-1";
-
-  audioUrl = `https://${uploadedAudio.bucket || BUCKET_NAME}.s3.${region}.amazonaws.com/${uploadedAudio.key}`;
-}
-
-    // Upload new cover to S3 when provided
- if (newCoverFile) {
-  uploadedCover = await uploadToS3(newCoverFile, "covers");
-
-  if (!uploadedCover) {
-    throw new Error("Cover upload failed.");
-  }
-
-  const region = process.env.AWS_REGION || "ap-south-1";
-
-  coverUrl = `https://${uploadedCover.bucket || BUCKET_NAME}.s3.${region}.amazonaws.com/${uploadedCover.key}`;
-}
-
-    // Preserve existing optional IDs if omitted
-    const artistId =
-      artist_id === undefined
-        ? existingSong.artist_id
-        : artist_id === ""
-          ? null
-          : Number(artist_id);
-
-    const albumId =
-      album_id === undefined
-        ? existingSong.album_id
-        : album_id === ""
-          ? null
-          : Number(album_id);
-
-    const categoryId =
-      category_id === undefined
-        ? existingSong.category_id
-        : category_id === ""
-          ? null
-          : Number(category_id);
-
-    let ministryId =
-      ministry_id === undefined
-        ? existingSong.ministry_id
-        : ministry_id === ""
-          ? null
-          : Number(ministry_id);
-
-    // Validate optional IDs
-    for (const [field, value] of [
-      ["artist_id", artistId],
-      ["album_id", albumId],
-      ["category_id", categoryId],
-      ["ministry_id", ministryId],
-    ]) {
-      if (value !== null &&
-          (!Number.isInteger(value) || value <= 0)) {
-        return res.status(400).json({
-          success: false,
-          message: `Invalid ${field}`,
-        });
-      }
-    }
-
-    // Validate ministry
-    if (ministryId !== null) {
-      const ministryResult = await pool.query(
-        `SELECT id FROM ministries WHERE id = $1`,
-        [ministryId]
+    if (newAudioFile) {
+      uploadedAudio = await uploadToS3(
+        newAudioFile,
+        "audio"
       );
 
-      if (ministryResult.rows.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Selected ministry does not exist",
-        });
+      if (!uploadedAudio) {
+        throw new Error("Audio upload failed");
+      }
+
+      audioUrl = getS3Url(uploadedAudio);
+
+      if (!audioUrl) {
+        throw new Error(
+          "Audio uploaded but no URL was returned by uploadMiddleware.js"
+        );
       }
     }
 
-    // Preserve featured value when omitted
+    if (newCoverFile) {
+      uploadedCover = await uploadToS3(
+        newCoverFile,
+        "covers"
+      );
+
+      if (!uploadedCover) {
+        throw new Error("Cover upload failed");
+      }
+
+      coverUrl = getS3Url(uploadedCover);
+
+      if (!coverUrl) {
+        throw new Error(
+          "Cover uploaded but no URL was returned by uploadMiddleware.js"
+        );
+      }
+    }
+
     const isFeatured =
       featured === undefined
         ? existingSong.featured
-        : featured === true || featured === "true";
+        : parseBoolean(featured);
 
-    // Update database
     const result = await pool.query(
       `
       UPDATE songs
@@ -1008,11 +1055,17 @@ console.log("MOODS TO SAVE:", songMoods);
       `,
       [
         title.trim(),
+
         title_english === undefined
           ? existingSong.title_english
-          : title_english?.trim() || null,
+          : String(title_english).trim() || null,
+
         selectedLanguage,
-        lyrics === undefined ? existingSong.lyrics : lyrics || null,
+
+        lyrics === undefined
+          ? existingSong.lyrics
+          : lyrics || "",
+
         audioUrl,
         coverUrl,
         artistId,
@@ -1020,23 +1073,30 @@ console.log("MOODS TO SAVE:", songMoods);
         categoryId,
         isFeatured,
         ministryId,
-         songMoods,
+        songMoods,
         id,
       ]
     );
 
     databaseUpdated = true;
 
-    // Delete old files only after database update succeeds
-    if (newAudioFile &&
-        existingSong.audio_url &&
-        existingSong.audio_url !== audioUrl) {
+    /*
+     * Delete replaced media only after the database update
+     * has succeeded and only if no other song uses it.
+     */
+    if (
+      newAudioFile &&
+      existingSong.audio_url &&
+      existingSong.audio_url !== audioUrl
+    ) {
       await deleteMediaIfUnused(existingSong.audio_url);
     }
 
-    if (newCoverFile &&
-        existingSong.cover_url &&
-        existingSong.cover_url !== coverUrl) {
+    if (
+      newCoverFile &&
+      existingSong.cover_url &&
+      existingSong.cover_url !== coverUrl
+    ) {
       await deleteMediaIfUnused(existingSong.cover_url);
     }
 
@@ -1046,22 +1106,36 @@ console.log("MOODS TO SAVE:", songMoods);
       song: result.rows[0],
     });
   } catch (error) {
-    console.error("Update song error:", error);
+    console.error("Update song error:", {
+      message: error.message,
+      code: error.code,
+      detail: error.detail,
+      constraint: error.constraint,
+    });
 
-    // Remove newly uploaded files if the database update failed
+    /*
+     * Roll back only newly uploaded objects if the
+     * database update did not complete.
+     */
     if (!databaseUpdated && uploadedAudio) {
-      await deleteS3Object(
-        `/media/audio/${uploadedAudio.filename}`
-      ).catch((err) =>
-        console.error("Audio rollback failed:", err)
+      await deleteUploadedObject(uploadedAudio).catch(
+        (cleanupError) => {
+          console.error(
+            "Audio rollback failed:",
+            cleanupError.message
+          );
+        }
       );
     }
 
     if (!databaseUpdated && uploadedCover) {
-      await deleteS3Object(
-        `/media/images/${uploadedCover.filename}`
-      ).catch((err) =>
-        console.error("Cover rollback failed:", err)
+      await deleteUploadedObject(uploadedCover).catch(
+        (cleanupError) => {
+          console.error(
+            "Cover rollback failed:",
+            cleanupError.message
+          );
+        }
       );
     }
 
@@ -1069,84 +1143,76 @@ console.log("MOODS TO SAVE:", songMoods);
       return res.status(400).json({
         success: false,
         message:
-          "Invalid artist, album, category or ministry",
+          "Invalid artist, album, category, ministry, or user reference.",
+      });
+    }
+
+    if (error.code === "23502") {
+      return res.status(400).json({
+        success: false,
+        message: "A required database field is missing.",
+      });
+    }
+
+    if (error.code === "22P02") {
+      return res.status(400).json({
+        success: false,
+        message: "One of the submitted fields has an invalid format.",
       });
     }
 
     return res.status(500).json({
       success: false,
       message: "Unable to update song",
+      ...(process.env.NODE_ENV !== "production" && {
+        detail: error.message,
+        code: error.code || null,
+      }),
     });
   }
 };
-
-
 
 /* =========================================================
    GET ALL SONG REPORTS - ADMIN
 ========================================================= */
 
-const getAdminSongReports = async (
-  req,
-  res
-) => {
+const getAdminSongReports = async (req, res) => {
   try {
+    const result = await pool.query(`
+      SELECT
+        sr.id,
+        sr.user_id,
+        sr.song_id,
+        sr.song_title,
+        sr.report_type,
+        sr.message,
+        sr.status,
+        sr.created_at,
 
-    /* =====================================================
-       GET REPORTS
-    ===================================================== */
+        u.name AS user_name,
+        u.email AS user_email
 
-    const result =
-      await pool.query(
-        `
-        SELECT
-          sr.id,
-          sr.user_id,
-          sr.song_id,
-          sr.song_title,
-          sr.report_type,
-          sr.message,
-          sr.status,
-          sr.created_at,
+      FROM song_reports sr
 
-          u.name AS user_name,
-          u.email AS user_email
+      LEFT JOIN users u
+        ON sr.user_id = u.id
 
-        FROM song_reports sr
-
-        LEFT JOIN users u
-          ON sr.user_id = u.id
-
-        ORDER BY
-          sr.created_at DESC,
-          sr.id DESC
-        `
-      );
-
-
-    /* =====================================================
-       SUCCESS
-    ===================================================== */
+      ORDER BY
+        sr.created_at DESC,
+        sr.id DESC
+    `);
 
     return res.status(200).json({
       success: true,
       count: result.rows.length,
       reports: result.rows,
     });
-
-
   } catch (error) {
-
-    console.error(
-      "Admin get song reports error:",
-      error
-    );
-
+    console.error("Admin get song reports error:", error);
 
     return res.status(500).json({
       success: false,
-      message:
-        "Unable to load song reports",
+      message: "Unable to load song reports",
     });
   }
 };
@@ -1155,40 +1221,17 @@ const getAdminSongReports = async (
    UPDATE SONG REPORT STATUS - ADMIN
 ========================================================= */
 
-const updateSongReportStatus = async (
-  req,
-  res
-) => {
-
+const updateSongReportStatus = async (req, res) => {
   try {
-
-    const {
-      id,
-    } = req.params;
-
-    const {
-      status,
-    } = req.body;
-
-
-    /* -----------------------------------------------------
-       VALIDATE ID
-    ----------------------------------------------------- */
+    const { id } = req.params;
+    const { status } = req.body || {};
 
     if (!id) {
-
       return res.status(400).json({
         success: false,
-        message:
-          "Report ID is required",
+        message: "Report ID is required",
       });
-
     }
-
-
-    /* -----------------------------------------------------
-       ALLOWED STATUS
-    ----------------------------------------------------- */
 
     const allowedStatuses = [
       "pending",
@@ -1196,224 +1239,112 @@ const updateSongReportStatus = async (
       "rejected",
     ];
 
+    const cleanStatus = String(status || "").toLowerCase();
 
-    if (
-      !allowedStatuses.includes(
-        String(status || "")
-          .toLowerCase()
-      )
-    ) {
-
+    if (!allowedStatuses.includes(cleanStatus)) {
       return res.status(400).json({
         success: false,
-        message:
-          "Invalid report status",
+        message: "Invalid report status",
         allowedStatuses,
       });
-
     }
 
+    const result = await pool.query(
+      `
+      UPDATE song_reports
+      SET status = $1
+      WHERE id = $2
+      RETURNING
+        id,
+        user_id,
+        song_id,
+        song_title,
+        report_type,
+        message,
+        status,
+        created_at
+      `,
+      [cleanStatus, id]
+    );
 
-    const cleanStatus =
-      String(status)
-        .toLowerCase();
-
-
-    /* -----------------------------------------------------
-       UPDATE
-    ----------------------------------------------------- */
-
-    const result =
-      await pool.query(
-        `
-        UPDATE song_reports
-
-        SET status = $1
-
-        WHERE id = $2
-
-        RETURNING
-          id,
-          user_id,
-          song_id,
-          song_title,
-          report_type,
-          message,
-          status,
-          created_at
-        `,
-        [
-          cleanStatus,
-          id,
-        ]
-      );
-
-
-    /* -----------------------------------------------------
-       NOT FOUND
-    ----------------------------------------------------- */
-
-    if (
-      result.rows.length === 0
-    ) {
-
+    if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message:
-          "Song report not found",
+        message: "Song report not found",
       });
-
     }
 
-
-    /* -----------------------------------------------------
-       SUCCESS
-    ----------------------------------------------------- */
-
     return res.status(200).json({
-
       success: true,
-
-      message:
-        "Report status updated successfully",
-
-      report:
-        result.rows[0],
-
+      message: "Report status updated successfully",
+      report: result.rows[0],
     });
-
-
   } catch (error) {
-
     console.error(
       "Admin update song report status error:",
       error
     );
 
-
     return res.status(500).json({
-
       success: false,
-
-      message:
-        "Unable to update report status",
-
+      message: "Unable to update report status",
     });
-
   }
-
 };
-
 
 /* =========================================================
    DELETE SONG REPORT - ADMIN
 ========================================================= */
 
-const deleteSongReport = async (
-  req,
-  res
-) => {
-
+const deleteSongReport = async (req, res) => {
   try {
-
-    const {
-      id,
-    } = req.params;
-
-
-    /* -----------------------------------------------------
-       VALIDATE ID
-    ----------------------------------------------------- */
+    const { id } = req.params;
 
     if (!id) {
-
       return res.status(400).json({
         success: false,
-        message:
-          "Report ID is required",
+        message: "Report ID is required",
       });
-
     }
 
+    const result = await pool.query(
+      `
+      DELETE FROM song_reports
+      WHERE id = $1
+      RETURNING
+        id,
+        song_title,
+        report_type,
+        message,
+        status
+      `,
+      [id]
+    );
 
-    /* -----------------------------------------------------
-       DELETE
-    ----------------------------------------------------- */
-
-    const result =
-      await pool.query(
-        `
-        DELETE FROM song_reports
-
-        WHERE id = $1
-
-        RETURNING
-          id,
-          song_title,
-          report_type,
-          message,
-          status
-        `,
-        [id]
-      );
-
-
-    /* -----------------------------------------------------
-       NOT FOUND
-    ----------------------------------------------------- */
-
-    if (
-      result.rows.length === 0
-    ) {
-
+    if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message:
-          "Song report not found",
+        message: "Song report not found",
       });
-
     }
 
-
-    /* -----------------------------------------------------
-       SUCCESS
-    ----------------------------------------------------- */
-
     return res.status(200).json({
-
       success: true,
-
-      message:
-        "Song report deleted successfully",
-
-      report:
-        result.rows[0],
-
+      message: "Song report deleted successfully",
+      report: result.rows[0],
     });
-
-
   } catch (error) {
-
     console.error(
       "Admin delete song report error:",
       error
     );
 
-
     return res.status(500).json({
-
       success: false,
-
-      message:
-        "Unable to delete song report",
-
+      message: "Unable to delete song report",
     });
-
   }
-
 };
-
-
 
 /* =========================================================
    EXPORT CONTROLLERS

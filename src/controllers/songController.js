@@ -464,18 +464,15 @@ const searchSongs = async (req, res) => {
    GET SONGS BY MOOD
 ========================================================= */
 
+/* =========================================================
+   GET SONGS BY MOOD
+========================================================= */
+
 const getSongsByMood = async (req, res) => {
-
   try {
-
-    const mood =
-      validateMood(
-        req.params.mood
-      );
-
+    const mood = validateMood(req.params.mood);
 
     if (!mood) {
-
       return res.status(400).json({
         success: false,
         message: "Invalid mood",
@@ -483,10 +480,9 @@ const getSongsByMood = async (req, res) => {
       });
     }
 
+    const userLanguage = getUserLanguage(req);
 
-    const userLanguage =
-      getUserLanguage(req);
-
+    const values = [mood];
 
     let sql = `
       SELECT
@@ -515,68 +511,40 @@ const getSongsByMood = async (req, res) => {
 
       FROM songs s
 
-      LEFT JOIN artists ar
-        ON s.artist_id = ar.id
+      LEFT JOIN artists ar ON s.artist_id = ar.id
+      LEFT JOIN albums al ON s.album_id = al.id
+      LEFT JOIN categories c ON s.category_id = c.id
 
-      LEFT JOIN albums al
-        ON s.album_id = al.id
-
-      LEFT JOIN categories c
-        ON s.category_id = c.id
-
-      WHERE
-        $1 = ANY(
-          COALESCE(
-            s.moods,
-            ARRAY[]::text[]
-          )
-        )
+      WHERE EXISTS (
+        SELECT 1
+        FROM unnest(
+          COALESCE(s.moods, ARRAY[]::text[])
+        ) AS song_mood(value)
+        WHERE LOWER(TRIM(song_mood.value)) = $1
+      )
     `;
-
-
-    const values = [
-      mood,
-    ];
-
 
     if (userLanguage) {
-
       values.push(userLanguage);
-
-      sql += `
-        AND s.language = $2
-      `;
+      sql += ` AND s.language = $${values.length}`;
     }
 
-
     sql += `
-      ORDER BY
-        s.created_at DESC,
-        s.id DESC
+      ORDER BY s.created_at DESC, s.id DESC
     `;
 
+    const result = await pool.query(sql, values);
 
-    const result =
-      await pool.query(
-        sql,
-        values
-      );
-
+    const songs = result.rows.map(transformSongMedia);
 
     return res.status(200).json({
       success: true,
       mood,
-      count: result.rows.length,
-      songs: result.rows,
+      count: songs.length,
+      songs,
     });
-
   } catch (error) {
-
-    console.error(
-      "Get songs by mood error:",
-      error
-    );
-
+    console.error("Get songs by mood error:", error);
 
     return res.status(500).json({
       success: false,
@@ -586,22 +554,21 @@ const getSongsByMood = async (req, res) => {
 };
 
 
+
+/* =========================================================
+   BROWSE ALL SONGS FOR MOOD
+========================================================= */
+
+
 /* =========================================================
    BROWSE ALL SONGS FOR MOOD
 ========================================================= */
 
 const browseSongsForMood = async (req, res) => {
-
   try {
-
-    const mood =
-      validateMood(
-        req.params.mood
-      );
-
+    const mood = validateMood(req.params.mood);
 
     if (!mood) {
-
       return res.status(400).json({
         success: false,
         message: "Invalid mood",
@@ -609,10 +576,8 @@ const browseSongsForMood = async (req, res) => {
       });
     }
 
-
-    const userLanguage =
-      getUserLanguage(req);
-
+    const userLanguage = getUserLanguage(req);
+    const values = [mood];
 
     let sql = `
       SELECT
@@ -628,86 +593,56 @@ const browseSongsForMood = async (req, res) => {
         s.created_at,
 
         ar.name AS artist_name,
+        ar.image_url AS artist_image,
 
         al.title AS album_title,
+        al.cover_url AS album_cover,
 
         c.name AS category_name,
 
-        CASE
-          WHEN $1 = ANY(
-            COALESCE(
-              s.moods,
-              ARRAY[]::text[]
-            )
-          )
-          THEN true
-          ELSE false
-        END AS is_in_mood
+        EXISTS (
+          SELECT 1
+          FROM unnest(
+            COALESCE(s.moods, ARRAY[]::text[])
+          ) AS song_mood(value)
+          WHERE LOWER(TRIM(song_mood.value)) = $1
+        ) AS is_in_mood
 
       FROM songs s
 
-      LEFT JOIN artists ar
-        ON s.artist_id = ar.id
-
-      LEFT JOIN albums al
-        ON s.album_id = al.id
-
-      LEFT JOIN categories c
-        ON s.category_id = c.id
+      LEFT JOIN artists ar ON s.artist_id = ar.id
+      LEFT JOIN albums al ON s.album_id = al.id
+      LEFT JOIN categories c ON s.category_id = c.id
     `;
-
-
-    const values = [
-      mood,
-    ];
-
 
     if (userLanguage) {
-
       values.push(userLanguage);
-
-      sql += `
-        WHERE s.language = $2
-      `;
+      sql += ` WHERE s.language = $${values.length}`;
     }
 
-
     sql += `
-      ORDER BY
-        s.created_at DESC,
-        s.id DESC
+      ORDER BY s.created_at DESC, s.id DESC
     `;
 
-
-    const result =
-      await pool.query(
-        sql,
-        values
-      );
-
+    const result = await pool.query(sql, values);
+    const songs = result.rows.map(transformSongMedia);
 
     return res.status(200).json({
       success: true,
       mood,
-      count: result.rows.length,
-      songs: result.rows,
+      count: songs.length,
+      songs,
     });
-
   } catch (error) {
-
-    console.error(
-      "Browse songs for mood error:",
-      error
-    );
-
+    console.error("Browse songs for mood error:", error);
 
     return res.status(500).json({
       success: false,
-      message:
-        "Unable to browse songs for mood",
+      message: "Unable to browse songs for mood",
     });
   }
 };
+
 
 
 /* =========================================================
@@ -933,91 +868,57 @@ const removeSongFromMood = async (req, res) => {
    GET AVAILABLE MOODS
 ========================================================= */
 
+
+/* =========================================================
+   GET AVAILABLE MOODS
+========================================================= */
+
 const getAvailableMoods = async (req, res) => {
-
   try {
-
-    const userLanguage =
-      getUserLanguage(req);
-
+    const userLanguage = getUserLanguage(req);
+    const values = [];
 
     let sql = `
       SELECT
-        mood,
-        COUNT(*)::integer AS song_count
+        LOWER(TRIM(mood_item.value)) AS mood,
+        COUNT(DISTINCT s.id)::integer AS song_count
 
-      FROM
-        songs,
-        UNNEST(
-          COALESCE(
-            songs.moods,
-            ARRAY[]::text[]
-          )
-        ) AS mood
+      FROM songs s
+
+      CROSS JOIN LATERAL unnest(
+        COALESCE(s.moods, ARRAY[]::text[])
+      ) AS mood_item(value)
     `;
-
-
-    const values = [];
-
 
     if (userLanguage) {
-
       values.push(userLanguage);
-
-      sql += `
-        WHERE songs.language = $1
-      `;
+      sql += ` WHERE s.language = $${values.length}`;
     }
 
-
     sql += `
-      GROUP BY mood
-      ORDER BY mood
+      GROUP BY LOWER(TRIM(mood_item.value))
     `;
 
+    const result = await pool.query(sql, values);
 
-    const result =
-      await pool.query(
-        sql,
-        values
-      );
+    const counts = new Map(
+      result.rows.map((row) => [
+        row.mood,
+        row.song_count,
+      ])
+    );
 
-
-    const moods =
-      ALLOWED_MOODS.map(
-        (mood) => {
-
-          const found =
-            result.rows.find(
-              (row) =>
-                row.mood === mood
-            );
-
-
-          return {
-            id: mood,
-
-            song_count:
-              found
-                ? found.song_count
-                : 0,
-          };
-        }
-      );
-
+    const moods = ALLOWED_MOODS.map((mood) => ({
+      id: mood,
+      song_count: counts.get(mood) || 0,
+    }));
 
     return res.status(200).json({
       success: true,
       moods,
     });
-
   } catch (error) {
-
-    console.error(
-      "Get available moods error:",
-      error
-    );
-
+    console.error("Get available moods error:", error);
 
     return res.status(500).json({
       success: false,
@@ -1025,6 +926,7 @@ const getAvailableMoods = async (req, res) => {
     });
   }
 };
+
 
 
 /* =========================================================
