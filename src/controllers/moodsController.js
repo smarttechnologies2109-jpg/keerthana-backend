@@ -10,28 +10,33 @@ const ALLOWED_MOODS = [
   "thanksgiving",
 ];
 
-const isValidMood = (mood) =>
-  ALLOWED_MOODS.includes(String(mood || "").trim().toLowerCase());
-
 const normalizeMood = (mood) =>
   String(mood || "").trim().toLowerCase();
 
+const isValidMood = (mood) =>
+  ALLOWED_MOODS.includes(normalizeMood(mood));
+
 /**
  * GET /api/moods/:mood/songs
- * Get songs assigned to a mood.
+ * Return songs assigned to the requested mood.
  */
 const getMoodSongs = async (req, res) => {
   try {
-    const mood = String(req.params.mood || "")
-      .trim()
-      .toLowerCase();
+    const mood = normalizeMood(req.params.mood);
 
     console.log("MOOD API REQUEST:", mood);
 
-    const result = await pool.query(
+    if (!isValidMood(mood)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid mood.",
+      });
+    }
+
+    const result = await db.query(
       `
       SELECT s.*
-      FROM songs s
+      FROM songs AS s
       WHERE EXISTS (
         SELECT 1
         FROM unnest(
@@ -45,53 +50,69 @@ const getMoodSongs = async (req, res) => {
     );
 
     console.log("MOOD API SONG COUNT:", result.rows.length);
-    console.log(
-      "MOOD API RESULTS:",
-      result.rows.map(song => ({
-        id: song.id,
-        title: song.title,
-        moods: song.moods,
-      }))
-    );
 
-    return res.json({ songs: result.rows });
+    return res.json({
+      success: true,
+      mood,
+      count: result.rows.length,
+      songs: result.rows,
+    });
   } catch (error) {
-    console.error("MOOD API ERROR:", error);
+    console.error("MOOD API ERROR:", {
+      message: error.message,
+      code: error.code,
+      detail: error.detail,
+    });
+
     return res.status(500).json({
-      message: "Failed to fetch mood songs",
+      success: false,
+      message: "Failed to fetch mood songs.",
     });
   }
 };
 
 /**
  * GET /api/moods/:mood/browse
- * Browse all songs and indicate whether each song has this mood.
+ * Return all songs and indicate whether each has this mood.
  */
 const browseSongs = async (req, res) => {
   try {
     const mood = normalizeMood(req.params.mood);
 
     if (!isValidMood(mood)) {
-      return res.status(400).json({ message: "Invalid mood." });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid mood.",
+      });
     }
 
     const result = await db.query(
-      `SELECT
-         s.*,
-         EXISTS (
-           SELECT 1
-           FROM unnest(COALESCE(s.moods, ARRAY[]::text[])) AS item(value)
-           WHERE LOWER(TRIM(item.value)) = $1
-         ) AS is_in_mood
-       FROM songs s
-       ORDER BY s.title ASC`,
+      `
+      SELECT
+        s.*,
+        EXISTS (
+          SELECT 1
+          FROM unnest(
+            COALESCE(s.moods, ARRAY[]::text[])
+          ) AS item(value)
+          WHERE LOWER(TRIM(item.value)) = $1
+        ) AS is_in_mood
+      FROM songs AS s
+      ORDER BY s.title ASC
+      `,
       [mood]
     );
 
-    return res.json({ songs: result.rows });
+    return res.json({
+      success: true,
+      mood,
+      songs: result.rows,
+    });
   } catch (error) {
-    console.error("Browse mood songs error:", error);
+    console.error("Browse mood songs error:", error.message);
+
     return res.status(500).json({
+      success: false,
       message: "Unable to browse songs.",
     });
   }
@@ -100,49 +121,67 @@ const browseSongs = async (req, res) => {
 /**
  * POST /api/moods/songs/:id
  * Add a mood to a song.
- * Request body: { "mood": "worship" }
+ * Body: { "mood": "worship" }
  */
 const addSongToMood = async (req, res) => {
   try {
-    const mood = normalizeMood(req.body.mood);
-    const songId = req.params.id;
+    const mood = normalizeMood(req.body?.mood);
+    const songId = Number(req.params.id);
 
     if (!isValidMood(mood)) {
-      return res.status(400).json({ message: "Invalid mood." });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid mood.",
+      });
+    }
+
+    if (!Number.isInteger(songId) || songId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid song ID.",
+      });
     }
 
     const result = await db.query(
-      `UPDATE songs
-       SET moods = CASE
-         WHEN EXISTS (
-           SELECT 1
-           FROM unnest(COALESCE(songs.moods, ARRAY[]::text[])) AS item(value)
-           WHERE LOWER(TRIM(item.value)) = $2
-         )
-         THEN COALESCE(songs.moods, ARRAY[]::text[])
-         ELSE array_append(
-           COALESCE(songs.moods, ARRAY[]::text[]),
-           $2
-         )
-       END
-       WHERE id = $1
-       RETURNING id, title, moods`,
+      `
+      UPDATE songs
+      SET moods = CASE
+        WHEN EXISTS (
+          SELECT 1
+          FROM unnest(
+            COALESCE(songs.moods, ARRAY[]::text[])
+          ) AS item(value)
+          WHERE LOWER(TRIM(item.value)) = $2
+        )
+        THEN COALESCE(songs.moods, ARRAY[]::text[])
+        ELSE array_append(
+          COALESCE(songs.moods, ARRAY[]::text[]),
+          $2
+        )
+      END
+      WHERE id = $1
+      RETURNING id, title, moods
+      `,
       [songId, mood]
     );
 
     if (result.rowCount === 0) {
-      return res.status(404).json({ message: "Song not found." });
+      return res.status(404).json({
+        success: false,
+        message: "Song not found.",
+      });
     }
 
     return res.json({
+      success: true,
       message: "Song added to mood successfully.",
-      songId: result.rows[0].id,
-      mood,
-      moods: result.rows[0].moods,
+      song: result.rows[0],
     });
   } catch (error) {
-    console.error("Add song to mood error:", error);
+    console.error("Add song to mood error:", error.message);
+
     return res.status(500).json({
+      success: false,
       message: "Unable to add song to mood.",
     });
   }
@@ -155,46 +194,62 @@ const addSongToMood = async (req, res) => {
 const removeSongFromMood = async (req, res) => {
   try {
     const mood = normalizeMood(req.params.mood);
-    const songId = req.params.id;
+    const songId = Number(req.params.id);
 
     if (!isValidMood(mood)) {
-      return res.status(400).json({ message: "Invalid mood." });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid mood.",
+      });
+    }
+
+    if (!Number.isInteger(songId) || songId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid song ID.",
+      });
     }
 
     const result = await db.query(
-      `UPDATE songs
-       SET moods = ARRAY(
-         SELECT item.value
-         FROM unnest(COALESCE(songs.moods, ARRAY[]::text[]))
-           AS item(value)
-         WHERE LOWER(TRIM(item.value)) <> $2
-       )
-       WHERE id = $1
-         AND EXISTS (
-           SELECT 1
-           FROM unnest(COALESCE(songs.moods, ARRAY[]::text[]))
-             AS item(value)
-           WHERE LOWER(TRIM(item.value)) = $2
-         )
-       RETURNING id, title, moods`,
+      `
+      UPDATE songs
+      SET moods = ARRAY(
+        SELECT item.value
+        FROM unnest(
+          COALESCE(songs.moods, ARRAY[]::text[])
+        ) AS item(value)
+        WHERE LOWER(TRIM(item.value)) <> $2
+      )
+      WHERE id = $1
+        AND EXISTS (
+          SELECT 1
+          FROM unnest(
+            COALESCE(songs.moods, ARRAY[]::text[])
+          ) AS item(value)
+          WHERE LOWER(TRIM(item.value)) = $2
+        )
+      RETURNING id, title, moods
+      `,
       [songId, mood]
     );
 
     if (result.rowCount === 0) {
       return res.status(404).json({
+        success: false,
         message: "Song not found or not assigned to this mood.",
       });
     }
 
     return res.json({
+      success: true,
       message: "Song removed from mood successfully.",
-      songId: result.rows[0].id,
-      mood,
-      moods: result.rows[0].moods,
+      song: result.rows[0],
     });
   } catch (error) {
-    console.error("Remove song from mood error:", error);
+    console.error("Remove song from mood error:", error.message);
+
     return res.status(500).json({
+      success: false,
       message: "Unable to remove song from mood.",
     });
   }

@@ -308,18 +308,35 @@ const getAdminSongs = async (req, res) => {
     }
 
     // Use the media URL returned by your existing S3 helper.
-    const audioUrl =
-      audioResult.location ||
-      audioResult.url ||
-      audioResult.audio_url;
+   
+const getS3Url = (result) => {
+  if (!result) return null;
 
-    const coverUrl = coverFile
-      ? (
-          uploadedCover.location ||
-          uploadedCover.url ||
-          uploadedCover.cover_url
-        )
-      : null;
+  if (result.location || result.url || result.audio_url || result.cover_url) {
+    return (
+      result.location ||
+      result.url ||
+      result.audio_url ||
+      result.cover_url
+    );
+  }
+
+  if (result.key) {
+    const region = process.env.AWS_REGION || "ap-south-1";
+
+    return `https://${result.bucket || BUCKET_NAME}.s3.${region}.amazonaws.com/${result.key}`;
+  }
+
+  return null;
+};
+
+const audioUrl = getS3Url(audioResult);
+const coverUrl = coverFile ? getS3Url(uploadedCover) : null;
+
+if (!audioUrl) {
+  throw new Error("Could not generate the S3 audio URL.");
+}
+
 
     if (!audioUrl) {
       throw new Error(
@@ -850,16 +867,30 @@ console.log("MOODS TO SAVE:", songMoods);
     let coverUrl = existingSong.cover_url;
 
     // Upload new audio to S3 when provided
-    if (newAudioFile) {
-      uploadedAudio = await uploadToS3(newAudioFile, "audio");
-      audioUrl = `/media/audio/${uploadedAudio.filename}`;
-    }
+  if (newAudioFile) {
+  uploadedAudio = await uploadToS3(newAudioFile, "audio");
+
+  if (!uploadedAudio) {
+    throw new Error("Audio upload failed.");
+  }
+
+  const region = process.env.AWS_REGION || "ap-south-1";
+
+  audioUrl = `https://${uploadedAudio.bucket || BUCKET_NAME}.s3.${region}.amazonaws.com/${uploadedAudio.key}`;
+}
 
     // Upload new cover to S3 when provided
-    if (newCoverFile) {
-      uploadedCover = await uploadToS3(newCoverFile, "covers");
-      coverUrl = `/media/images/${uploadedCover.filename}`;
-    }
+ if (newCoverFile) {
+  uploadedCover = await uploadToS3(newCoverFile, "covers");
+
+  if (!uploadedCover) {
+    throw new Error("Cover upload failed.");
+  }
+
+  const region = process.env.AWS_REGION || "ap-south-1";
+
+  coverUrl = `https://${uploadedCover.bucket || BUCKET_NAME}.s3.${region}.amazonaws.com/${uploadedCover.key}`;
+}
 
     // Preserve existing optional IDs if omitted
     const artistId =
