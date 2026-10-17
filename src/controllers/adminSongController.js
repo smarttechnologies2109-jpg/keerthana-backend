@@ -183,9 +183,7 @@ const getAdminSongs = async (req, res) => {
       "======================================"
     );
 
-console.log("========== MOOD DEBUG ==========");
-console.log("MOODS RECEIVED:", req.body.moods);
-console.log("MOODS TO SAVE:", songMoods);
+
     /* =====================================================
        CREATED BY
     ===================================================== */
