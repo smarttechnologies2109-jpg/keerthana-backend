@@ -22,29 +22,43 @@ const normalizeMood = (mood) =>
  */
 const getMoodSongs = async (req, res) => {
   try {
-    const mood = normalizeMood(req.params.mood);
+    const mood = String(req.params.mood || "")
+      .trim()
+      .toLowerCase();
 
-    if (!isValidMood(mood)) {
-      return res.status(400).json({ message: "Invalid mood." });
-    }
+    console.log("MOOD API REQUEST:", mood);
 
-    const result = await db.query(
-      `SELECT s.*
-       FROM songs s
-       WHERE EXISTS (
-         SELECT 1
-         FROM unnest(COALESCE(s.moods, ARRAY[]::text[])) AS item(value)
-         WHERE LOWER(TRIM(item.value)) = $1
-       )
-       ORDER BY s.title ASC`,
+    const result = await pool.query(
+      `
+      SELECT s.*
+      FROM songs s
+      WHERE EXISTS (
+        SELECT 1
+        FROM unnest(
+          COALESCE(s.moods, ARRAY[]::text[])
+        ) AS item(value)
+        WHERE LOWER(TRIM(item.value)) = $1
+      )
+      ORDER BY s.title ASC
+      `,
       [mood]
+    );
+
+    console.log("MOOD API SONG COUNT:", result.rows.length);
+    console.log(
+      "MOOD API RESULTS:",
+      result.rows.map(song => ({
+        id: song.id,
+        title: song.title,
+        moods: song.moods,
+      }))
     );
 
     return res.json({ songs: result.rows });
   } catch (error) {
-    console.error("Get mood songs error:", error);
+    console.error("MOOD API ERROR:", error);
     return res.status(500).json({
-      message: "Unable to load mood songs.",
+      message: "Failed to fetch mood songs",
     });
   }
 };
