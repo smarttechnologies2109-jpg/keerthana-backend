@@ -3,7 +3,10 @@ const pool = require("../config/db");
 const {
   S3Client,
   DeleteObjectCommand,
+  GetObjectCommand,
 } = require("@aws-sdk/client-s3");
+
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const {
   uploadToS3,
@@ -16,7 +19,32 @@ const s3 = new S3Client({
 const BUCKET_NAME =
   process.env.S3_BUCKET_NAME ||
   "keerthana-media-908209635187";
+const getPresignedMediaUrl = async (mediaUrl) => {
+  if (!mediaUrl) return null;
 
+  try {
+    const parsedUrl = new URL(mediaUrl);
+
+    // Extract the object key from an existing S3 URL.
+    const key = decodeURIComponent(
+      parsedUrl.pathname.replace(/^\/+/, "")
+    );
+
+    if (!key) return null;
+
+    return await getSignedUrl(
+      s3,
+      new GetObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: key,
+      }),
+      { expiresIn: 3600 }
+    );
+  } catch (error) {
+    console.error("Failed to sign S3 media URL:", error.message);
+    throw error;
+  }
+};
 
   const ALLOWED_MOODS = [
   "worship",
