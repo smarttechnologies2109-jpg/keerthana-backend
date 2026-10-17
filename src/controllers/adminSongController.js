@@ -150,125 +150,49 @@ const getAdminSongs = async (req, res) => {
   let uploadedCover = null;
 
   try {
+    console.log("========== CREATE SONG START ==========");
+    console.log("Request body:", {
+      ...req.body,
+      lyrics: req.body?.lyrics ? "[provided]" : "",
+    });
+
+    console.log(
+      "Uploaded file fields:",
+      Object.keys(req.files || {})
+    );
+
     const {
       title,
       title_english,
-      language,
-      lyrics,
+      language = "Telugu",
+      lyrics = "",
       artist_id,
       album_id,
       category_id,
       ministry_id,
-      featured,
-       moods,
-    } = req.body;
+      featured = false,
+      moods = [],
+    } = req.body || {};
 
-    console.log(
-      "========== CREATE SONG BODY =========="
-    );
+    // -----------------------------------------
+    // 1. VALIDATE REQUIRED FIELDS
+    // -----------------------------------------
 
-    console.log(req.body);
-
-    console.log(
-      "LOGGED-IN USER:",
-      req.user
-    );
-
-    console.log(
-      "MINISTRY ID RECEIVED:",
-      ministry_id
-    );
-
-    console.log(
-      "======================================"
-    );
-
-
-    /* =====================================================
-       CREATED BY
-    ===================================================== */
-
-    const createdBy = req.user?.id
-      ? Number(req.user.id)
-      : null;
-
-
-    /*
-      created_by is important for Business Owner statistics.
-
-      Every newly uploaded song will be connected
-      to the admin who uploaded it.
-    */
-
-    if (!createdBy || !Number.isInteger(createdBy)) {
-      return res.status(401).json({
-        success: false,
-        message:
-          "Unable to identify the logged-in admin",
-      });
-    }
-
-
-    /* =====================================================
-       VALIDATE TITLE
-    ===================================================== */
-
-    if (!title || !title.trim()) {
+    if (!title || !String(title).trim()) {
       return res.status(400).json({
         success: false,
-        message:
-          "Song title is required",
+        message: "Song title is required",
       });
     }
 
-
-    /* =====================================================
-       AUDIO FILE
-    ===================================================== */
-
-    const audioFile =
-      req.files?.audio?.[0];
+    const audioFile = req.files?.audio?.[0];
 
     if (!audioFile) {
       return res.status(400).json({
         success: false,
-        message:
-          "Please upload an audio file",
+        message: "Please upload an audio file",
       });
     }
-
-
-    /* =====================================================
-       COVER FILE
-    ===================================================== */
-
-    const coverFile =
-      req.files?.cover?.[0];
-
-
-    /* =====================================================
-       MEDIA URLS
-    ===================================================== */
-
-  
-
-
-    /* =====================================================
-       FEATURED
-    ===================================================== */
-
-    const isFeatured =
-      featured === true ||
-      featured === "true";
-
-
-    /* =====================================================
-       LANGUAGE
-    ===================================================== */
-
-    const selectedLanguage =
-      String(language || "Telugu").trim();
-
 
     const allowedLanguages = [
       "Telugu",
@@ -279,278 +203,251 @@ const getAdminSongs = async (req, res) => {
       "Tamil",
     ];
 
-
-    if (
-      !allowedLanguages.includes(
-        selectedLanguage
-      )
-    ) {
+    if (!allowedLanguages.includes(language)) {
       return res.status(400).json({
         success: false,
-        message:
-          "Invalid song language",
-        allowedLanguages,
+        message: "Invalid song language",
       });
     }
 
-    let songMoods;
+    // -----------------------------------------
+    // 2. VALIDATE AND NORMALIZE MOODS
+    // -----------------------------------------
 
-try {
-  songMoods = parseSongMoods(moods, []);
+    const ALLOWED_MOODS = [
+      "worship",
+      "praise",
+      "prayer",
+      "hope",
+      "peace",
+      "thanksgiving",
+    ];
 
-  console.log("========== MOOD DEBUG ==========");
-  console.log("MOODS RECEIVED:", moods);
-  console.log("MOODS TO SAVE:", songMoods);
-  console.log("MOODS TYPE:", typeof songMoods);
-  console.log("MOODS IS ARRAY:", Array.isArray(songMoods));
-  console.log("================================");
+    let songMoods = [];
 
-} catch (error) {
-  console.error("MOOD PARSING ERROR:", error.message);
+    try {
+      let parsedMoods = moods;
 
-  return res.status(400).json({
-    success: false,
-    message: error.message,
-  });
-}
+      if (typeof parsedMoods === "string") {
+        parsedMoods = parsedMoods.trim()
+          ? JSON.parse(parsedMoods)
+          : [];
+      }
 
-    /* =====================================================
-       MINISTRY ID
-    ===================================================== */
+      if (!Array.isArray(parsedMoods)) {
+        throw new Error("Moods must be an array");
+      }
 
-    let ministryId = null;
-
-    if (
-      ministry_id !== undefined &&
-      ministry_id !== null &&
-      ministry_id !== ""
-    ) {
-      ministryId =
-        Number(ministry_id);
+      songMoods = [
+        ...new Set(
+          parsedMoods.map((mood) =>
+            String(mood).trim().toLowerCase()
+          )
+        ),
+      ];
 
       if (
-        !Number.isInteger(ministryId)
+        songMoods.some(
+          (mood) => !ALLOWED_MOODS.includes(mood)
+        )
       ) {
         return res.status(400).json({
           success: false,
-          message:
-            "Invalid ministry",
+          message: "Invalid mood selected",
+          allowedMoods: ALLOWED_MOODS,
         });
       }
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid moods format. Please select moods again.",
+      });
     }
 
+    console.log("MOODS TO SAVE:", songMoods);
 
-    /* =====================================================
-       OPTIONAL FOREIGN KEYS
-    ===================================================== */
+    // -----------------------------------------
+    // 3. GET USER ID
+    // -----------------------------------------
 
-    const artistId =
-      artist_id
-        ? Number(artist_id)
-        : null;
+    const createdBy = req.user?.id || null;
 
-    const albumId =
-      album_id
-        ? Number(album_id)
-        : null;
+    // -----------------------------------------
+    // 4. UPLOAD AUDIO AND COVER
+    // -----------------------------------------
+    //
+    // Keep the uploadToS3 arguments and return format
+    // consistent with your existing uploadMiddleware.js.
+    // Do not assume an upload succeeded unless it returns.
+    // -----------------------------------------
 
-    const categoryId =
-      category_id
-        ? Number(category_id)
-        : null;
-
-
-    /* =====================================================
-       VALIDATE MINISTRY
-    ===================================================== */
-
-    if (ministryId !== null) {
-
-      const ministryResult =
-        await pool.query(
-          `
-          SELECT id
-          FROM ministries
-          WHERE id = $1
-          `,
-          [ministryId]
-        );
-
-
-      if (
-        ministryResult.rows.length === 0
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Selected ministry does not exist",
-        });
-      }
-    }
-
-/* =====================================================
-   UPLOAD AUDIO AND COVER TO S3
-===================================================== */
-
-uploadedAudio = await uploadToS3(
-  audioFile,
-  "audio"
-);
-
-uploadedCover = coverFile
-  ? await uploadToS3(coverFile, "covers")
-  : null;
-
-const audio_url =
-  `/media/audio/${uploadedAudio.filename}`;
-
-const cover_url = uploadedCover
-  ? `/media/images/${uploadedCover.filename}`
-  : null;
-    /* =====================================================
-       INSERT SONG
-    ===================================================== */
-
-    const result =
-      await pool.query(
-        `
-        INSERT INTO songs
-        (
-          title,
-          title_english,
-          language,
-          lyrics,
-          audio_url,
-          cover_url,
-          artist_id,
-          album_id,
-          category_id,
-          featured,
-          ministry_id,
-          moods,
-          created_by
-        )
-
-        VALUES
-        (
-          $1,
-          $2,
-          $3,
-          $4,
-          $5,
-          $6,
-          $7,
-          $8,
-          $9,
-          $10,
-          $11,
-          $12,
-          $13
-        )
-
-        RETURNING *
-        `,
-        [
-          title.trim(),
-
-          title_english?.trim() ||
-            null,
-
-          selectedLanguage,
-
-          lyrics ||
-            null,
-
-          audio_url,
-
-          cover_url,
-
-          artistId,
-
-          albumId,
-
-          categoryId,
-
-          isFeatured,
-
-          ministryId,
-
-          songMoods,
-
-          createdBy,
-        ]
-      );
-
-
-    /* =====================================================
-       SUCCESS
-    ===================================================== */
-
-    return res.status(201).json({
-
-      success: true,
-
-      message:
-        "Song uploaded successfully",
-
-      song:
-        result.rows[0],
-
-    });
-
-
-  } catch (error) {
-
-    console.error(
-      "Create song error:",
-      error
+    const audioResult = await uploadToS3(
+      audioFile,
+      "audio"
     );
 
-    if (uploadedAudio) {
-      await deleteS3Object(
-        `/media/audio/${uploadedAudio.filename}`
-      ).catch((err) =>
-        console.error("Audio rollback failed:", err)
+    if (!audioResult) {
+      throw new Error("Audio upload did not return a result");
+    }
+
+    uploadedAudio = audioResult;
+
+    const coverFile = req.files?.cover?.[0];
+
+    if (coverFile) {
+      const coverResult = await uploadToS3(
+        coverFile,
+        "covers"
+      );
+
+      if (!coverResult) {
+        throw new Error("Cover upload did not return a result");
+      }
+
+      uploadedCover = coverResult;
+    }
+
+    // Use the media URL returned by your existing S3 helper.
+    const audioUrl =
+      audioResult.location ||
+      audioResult.url ||
+      audioResult.audio_url;
+
+    const coverUrl = coverFile
+      ? (
+          uploadedCover.location ||
+          uploadedCover.url ||
+          uploadedCover.cover_url
+        )
+      : null;
+
+    if (!audioUrl) {
+      throw new Error(
+        "S3 upload completed but no audio URL was returned. Check uploadMiddleware.js."
       );
     }
 
-    if (uploadedCover) {
-      await deleteS3Object(
-        `/media/images/${uploadedCover.filename}`
-      ).catch((err) =>
-        console.error("Cover rollback failed:", err)
-      );
-    }
-    /* =====================================================
-       FOREIGN KEY ERROR
-    ===================================================== */
+    // -----------------------------------------
+    // 5. INSERT SONG INTO POSTGRESQL
+    // -----------------------------------------
 
-    if (
-      error.code === "23503"
-    ) {
+    const sql = `
+      INSERT INTO songs (
+        title,
+        title_english,
+        language,
+        lyrics,
+        audio_url,
+        cover_url,
+        artist_id,
+        album_id,
+        category_id,
+        featured,
+        ministry_id,
+        moods,
+        created_by
+      )
+      VALUES (
+        $1, $2, $3, $4, $5, $6,
+        $7, $8, $9, $10, $11, $12, $13
+      )
+      RETURNING *;
+    `;
+
+    const values = [
+      String(title).trim(),
+      title_english || null,
+      language,
+      lyrics || "",
+      audioUrl,
+      coverUrl,
+      artist_id || null,
+      album_id || null,
+      category_id || null,
+      featured === true ||
+        featured === "true" ||
+        featured === "1",
+      ministry_id || null,
+      songMoods,
+      createdBy,
+    ];
+
+    const result = await pool.query(sql, values);
+
+    if (!result.rows || result.rows.length === 0) {
+      throw new Error("Song was not returned after database insert");
+    }
+
+    const savedSong = result.rows[0];
+
+    console.log("SONG INSERT SUCCESS:", {
+      id: savedSong.id,
+      title: savedSong.title,
+      moods: savedSong.moods,
+    });
+
+    // -----------------------------------------
+    // 6. SEND SUCCESS RESPONSE
+    // -----------------------------------------
+
+    return res.status(201).json({
+      success: true,
+      message: "Song uploaded successfully",
+      song: savedSong,
+    });
+  } catch (error) {
+    // -----------------------------------------
+    // 7. LOG THE ACTUAL ERROR
+    // -----------------------------------------
+
+    console.error("CREATE SONG ERROR DETAILS:", {
+      message: error.message,
+      code: error.code,
+      detail: error.detail,
+      constraint: error.constraint,
+      stack: error.stack,
+    });
+
+    // Do not hide the real error in your server logs.
+    // Remove uploaded files here only using your existing
+    // deleteS3Object helper and its verified key format.
+
+    if (error.code === "23503") {
       return res.status(400).json({
         success: false,
         message:
-          "Invalid artist, album, category, ministry or creator",
+          "Invalid artist, album, category, ministry, or user reference.",
+        detail: error.detail,
       });
     }
 
+    if (error.code === "23502") {
+      return res.status(400).json({
+        success: false,
+        message: "A required database field is missing.",
+        detail: error.detail,
+      });
+    }
+
+    if (error.code === "22P02") {
+      return res.status(400).json({
+        success: false,
+        message: "One of the submitted fields has an invalid format.",
+        detail: error.message,
+      });
+    }
 
     return res.status(500).json({
       success: false,
-      message:
-        "Unable to upload song",
+      message: "Unable to upload song",
+      ...(process.env.NODE_ENV !== "production" && {
+        detail: error.message,
+        code: error.code || null,
+      }),
     });
-
   }
 };
 
-
-
-
-/* =========================================================
-   DELETE MEDIA FILE
-========================================================= */
 
 
 /* =========================================================
