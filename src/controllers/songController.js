@@ -1,6 +1,60 @@
 
 const pool = require("../config/db");
 
+const CLOUDFRONT_URL =
+  "https://d1aj7yf1pvtrkq.cloudfront.net";
+
+/**
+ * Convert stored S3 media URLs to CloudFront URLs.
+ * Supports audio/ and covers/ object keys.
+ */
+const getPublicMediaUrl = (mediaUrl) => {
+  if (
+    typeof mediaUrl !== "string" ||
+    !mediaUrl.trim()
+  ) {
+    return mediaUrl;
+  }
+
+  const value = mediaUrl.trim();
+
+  try {
+    const url = new URL(value);
+
+    // Convert URLs belonging to the KEERTHANA S3 bucket.
+    if (
+      url.hostname ===
+      "keerthana-media-908209635187.s3.ap-south-1.amazonaws.com"
+    ) {
+      const key = decodeURIComponent(
+        url.pathname.replace(/^\/+/, "")
+      );
+
+      if (
+        key.startsWith("audio/") ||
+        key.startsWith("covers/")
+      ) {
+        return `${CLOUDFRONT_URL}/${key
+          .split("/")
+          .map(encodeURIComponent)
+          .join("/")}`;
+      }
+    }
+
+    // Keep existing CloudFront URLs and other URLs unchanged.
+    return value;
+  } catch {
+    return value;
+  }
+};
+
+const transformSongMedia = (song) => ({
+  ...song,
+  audio_url: getPublicMediaUrl(song.audio_url),
+  cover_url: getPublicMediaUrl(song.cover_url),
+  album_cover: getPublicMediaUrl(song.album_cover),
+  artist_image: getPublicMediaUrl(song.artist_image),
+});
 
 /* =========================================================
    ALLOWED MOODS
