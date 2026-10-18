@@ -207,11 +207,11 @@ const getAllSongs = async (req, res) => {
       );
 
 
-    return res.status(200).json({
-      success: true,
-      count: result.rows.length,
-      songs: result.rows,
-    });
+ return res.status(200).json({
+  success: true,
+  count: result.rows.length,
+  songs: result.rows.map(transformSongMedia),
+});
 
   } catch (error) {
 
@@ -308,7 +308,7 @@ const getSongById = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      song: result.rows[0],
+      song: transformSongMedia(result.rows[0]),
     });
 
   } catch (error) {
@@ -441,7 +441,7 @@ const searchSongs = async (req, res) => {
       success: true,
       query,
       count: result.rows.length,
-      songs: result.rows,
+    songs: result.rows.map(transformSongMedia),
     });
 
   } catch (error) {
