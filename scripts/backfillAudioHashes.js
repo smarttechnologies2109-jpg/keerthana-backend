@@ -1,10 +1,6 @@
 
 const crypto = require("crypto");
-const {
-  S3Client,
-  GetObjectCommand,
-} = require("@aws-sdk/client-s3");
-
+const { S3Client, GetObjectCommand } = require("@aws-sdk/client-s3");
 const pool = require("../src/config/db");
 
 const REGION = process.env.AWS_REGION || "ap-south-1";
@@ -13,6 +9,9 @@ const BUCKET =
 
 const s3 = new S3Client({ region: REGION });
 
+/**
+ * Extract the S3 object key from a supported S3 audio URL.
+ */
 function getS3Key(audioUrl) {
   const url = new URL(audioUrl);
 
@@ -28,6 +27,10 @@ function getS3Key(audioUrl) {
   return decodeURIComponent(url.pathname.replace(/^\/+/, ""));
 }
 
+/**
+ * Download an existing audio object from S3 and calculate SHA-256.
+ * The audio file is streamed; it is not saved to disk.
+ */
 async function hashS3Audio(audioUrl) {
   const key = getS3Key(audioUrl);
 
@@ -39,7 +42,7 @@ async function hashS3Audio(audioUrl) {
   );
 
   if (!response.Body) {
-    throw new Error(`No audio content returned for ${key}`);
+    throw new Error(`No audio content returned for S3 key: ${key}`);
   }
 
   const hash = crypto.createHash("sha256");
@@ -51,6 +54,12 @@ async function hashS3Audio(audioUrl) {
   return hash.digest("hex");
 }
 
+/**
+ * Process existing songs that do not yet have an audio hash.
+ *
+ * If identical audio bytes already have a saved hash, this script
+ * reports the duplicate and does not save the hash to the duplicate row.
+ */
 async function main() {
   try {
     const result = await pool.query(`
@@ -65,47 +74,56 @@ async function main() {
 
     for (const song of result.rows) {
       try {
+        console.log(`Checking song ID ${song.id}: ${song.title}`);
+
         const hash = await hashS3Audio(song.audio_url);
 
+        // Check whether another song already has the same audio hash.
         const duplicate = await pool.query(
-          `
-          SELECT id, title
-          FROM songs
-          WHERE audio_sha256 = $1
-          LIMIT 1
-          `,
+          `SELECT id, title
+           FROM songs
+           WHERE audio_sha256 = $1
+           LIMIT 1`,
           [hash]
         );
 
         if (duplicate.rows.length > 0) {
           console.log(
-            `DUPLICATE: Song ${song.id} matches song ${duplicate.rows[0].id}. ` +
-            "Its hash was not saved."
+            `DUPLICATE AUDIO: Song ID ${song.id} matches ` +
+              `song ID ${duplicate.rows[0].id}.`
           );
+
+          console.log(
+            "The duplicate row's hash was not saved."
+          );
+
           continue;
         }
 
+        // Save the hash only if this song's hash is still NULL.
         const updateResult = await pool.query(
-          `
-          UPDATE songs
-          SET audio_sha256 = $1
-          WHERE id = $2
-            AND audio_sha256 IS NULL
-          `,
+          `UPDATE songs
+           SET audio_sha256 = $1
+           WHERE id = $2
+             AND audio_sha256 IS NULL`,
           [hash, song.id]
         );
 
         if (updateResult.rowCount === 1) {
-          console.log(`Hashed song ${song.id}: ${song.title}`);
+          console.log(`HASH SAVED: Song ID ${song.id}`);
+        } else {
+          console.log(
+            `SKIPPED: Song ID ${song.id} was updated by another process.`
+          );
         }
       } catch (error) {
         console.error(
-          `Failed song ${song.id}: ${error.message}`
+          `FAILED: Song ID ${song.id}: ${error.message}`
         );
       }
     }
 
-    console.log("Backfill completed.");
+    console.log("Audio hash backfill finished.");
   } finally {
     await pool.end();
   }

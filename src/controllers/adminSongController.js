@@ -167,33 +167,27 @@ const parseSongMoods = (value, fallback = []) => {
  * an object key.
  */
 const getS3Url = (result) => {
-  if (!result) {
-    return null;
-  }
+  if (!result) return null;
 
-  const returnedUrl =
-    result.location ||
-    result.url ||
-    result.audio_url ||
-    result.cover_url;
-
-  if (returnedUrl) {
-    return returnedUrl;
-  }
-
+  // Your uploadMiddleware returns { key, filename, bucket }.
   if (result.key) {
     const bucket = result.bucket || BUCKET_NAME;
 
-    return (
-      `https://${bucket}.s3.${AWS_REGION}.amazonaws.com/` +
-      String(result.key)
-        .split("/")
-        .map((part) => encodeURIComponent(part))
-        .join("/")
-    );
+    return `https://${bucket}.s3.${AWS_REGION}.amazonaws.com/${String(
+      result.key
+    )
+      .split("/")
+      .map((part) => encodeURIComponent(part))
+      .join("/")}`;
   }
 
-  return null;
+  return (
+    result.location ||
+    result.url ||
+    result.audio_url ||
+    result.cover_url ||
+    null
+  );
 };
 
 /**
@@ -576,29 +570,24 @@ const createSong = async (req, res) => {
         message: error.message,
       });
     }
+const audioSha256 = getAudioSha256(audioFile);
 
-    // 6. Calculate SHA-256 from the uploaded audio bytes
-    const audioSha256 = getAudioSha256(audioFile);
+const duplicateResult = await pool.query(
+  `SELECT id, title, title_english, language
+   FROM songs
+   WHERE audio_sha256 = $1
+   LIMIT 1`,
+  [audioSha256]
+);
 
-    // 7. Check whether the exact same audio already exists
-    const duplicateResult = await pool.query(
-      `
-      SELECT id, title, title_english, language
-      FROM songs
-      WHERE audio_sha256 = $1
-      LIMIT 1
-      `,
-      [audioSha256]
-    );
-
-    if (duplicateResult.rows.length > 0) {
-      return res.status(409).json({
-        success: false,
-        code: "DUPLICATE_AUDIO",
-        message: "This audio file already exists in your songs.",
-        existingSong: duplicateResult.rows[0],
-      });
-    }
+if (duplicateResult.rows.length > 0) {
+  return res.status(409).json({
+    success: false,
+    code: "DUPLICATE_AUDIO",
+    message: "This audio file already exists in your songs.",
+    existingSong: duplicateResult.rows[0],
+  });
+}
 
     // 8. Upload audio only after the duplicate check
     uploadedAudio = await uploadToS3(audioFile, "audio");
@@ -1031,30 +1020,27 @@ const updateSong = async (req, res) => {
     // Preserve the current hash if audio is not being replaced.
     let audioSha256 = existingSong.audio_sha256 || null;
 
-    // 8. Check replacement audio BEFORE uploading it to S3
     if (newAudioFile) {
-      audioSha256 = getAudioSha256(newAudioFile);
+  audioSha256 = getAudioSha256(newAudioFile);
 
-      const duplicateResult = await pool.query(
-        `
-        SELECT id, title, title_english, language
-        FROM songs
-        WHERE audio_sha256 = $1
-          AND id <> $2
-        LIMIT 1
-        `,
-        [audioSha256, id]
-      );
+  const duplicateResult = await pool.query(
+    `SELECT id, title, title_english, language
+     FROM songs
+     WHERE audio_sha256 = $1
+       AND id <> $2
+     LIMIT 1`,
+    [audioSha256, id]
+  );
 
-      if (duplicateResult.rows.length > 0) {
-        return res.status(409).json({
-          success: false,
-          code: "DUPLICATE_AUDIO",
-          message: "This audio file already exists in another song.",
-          existingSong: duplicateResult.rows[0],
-        });
-      }
-    }
+  if (duplicateResult.rows.length > 0) {
+    return res.status(409).json({
+      success: false,
+      code: "DUPLICATE_AUDIO",
+      message: "This audio file already exists in another song.",
+      existingSong: duplicateResult.rows[0],
+    });
+  }
+}
 
     // 9. Preserve existing URLs unless replacements are uploaded
     let audioUrl = existingSong.audio_url;
