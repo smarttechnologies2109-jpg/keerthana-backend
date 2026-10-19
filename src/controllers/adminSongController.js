@@ -1,9 +1,24 @@
 const pool = require("../config/db");
+const crypto = require("crypto");
 
 const {
   S3Client,
   DeleteObjectCommand,
 } = require("@aws-sdk/client-s3");
+
+
+const getAudioSha256 = (audioFile) => {
+  if (!audioFile?.buffer || !Buffer.isBuffer(audioFile.buffer)) {
+    throw new Error(
+      "Unable to calculate audio hash: uploaded audio buffer is missing."
+    );
+  }
+
+  return crypto
+    .createHash("sha256")
+    .update(audioFile.buffer)
+    .digest("hex");
+};
 
 const {
   uploadToS3,
@@ -480,6 +495,11 @@ const getAdminSongs = async (req, res) => {
    CREATE SONG
 ========================================================= */
 
+
+/* =========================================================
+   CREATE SONG - WITH DUPLICATE AUDIO CHECK
+========================================================= */
+
 const createSong = async (req, res) => {
   let uploadedAudio = null;
   let uploadedCover = null;
@@ -499,6 +519,7 @@ const createSong = async (req, res) => {
       moods = [],
     } = req.body || {};
 
+    // 1. Validate title
     if (!title || !String(title).trim()) {
       return res.status(400).json({
         success: false,
@@ -506,15 +527,17 @@ const createSong = async (req, res) => {
       });
     }
 
+    // 2. Validate audio upload
     const audioFile = req.files?.audio?.[0];
 
     if (!audioFile) {
       return res.status(400).json({
         success: false,
-        message: "Please upload an audio file",
+        message: "Audio file is required",
       });
     }
 
+    // 3. Validate language
     if (!ALLOWED_LANGUAGES.includes(language)) {
       return res.status(400).json({
         success: false,
@@ -523,6 +546,7 @@ const createSong = async (req, res) => {
       });
     }
 
+    // 4. Validate moods
     let songMoods;
 
     try {
@@ -535,6 +559,7 @@ const createSong = async (req, res) => {
       });
     }
 
+    // 5. Validate optional relationship IDs
     let artistId;
     let albumId;
     let categoryId;
@@ -552,44 +577,66 @@ const createSong = async (req, res) => {
       });
     }
 
-    /*
-     * Keep each relationship optional and independently
-     * selectable. Do not infer one ID from another.
-     *
-     * Existing database foreign keys still apply.
-     */
-    const createdBy = req.user?.id || null;
+    // 6. Calculate SHA-256 from the uploaded audio bytes
+    const audioSha256 = getAudioSha256(audioFile);
 
+    // 7. Check whether the exact same audio already exists
+    const duplicateResult = await pool.query(
+      `
+      SELECT id, title, title_english, language
+      FROM songs
+      WHERE audio_sha256 = $1
+      LIMIT 1
+      `,
+      [audioSha256]
+    );
+
+    if (duplicateResult.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        code: "DUPLICATE_AUDIO",
+        message: "This audio file already exists in your songs.",
+        existingSong: duplicateResult.rows[0],
+      });
+    }
+
+    // 8. Upload audio only after the duplicate check
     uploadedAudio = await uploadToS3(audioFile, "audio");
 
     if (!uploadedAudio) {
       throw new Error("Audio upload did not return a result");
     }
 
+    // 9. Upload optional cover image
     const coverFile = req.files?.cover?.[0];
 
     if (coverFile) {
-      uploadedCover = await uploadToS3(
-        coverFile,
-        "covers"
-      );
+      uploadedCover = await uploadToS3(coverFile, "covers");
 
       if (!uploadedCover) {
         throw new Error("Cover upload did not return a result");
       }
     }
 
+    // 10. Resolve uploaded media URLs
     const audioUrl = getS3Url(uploadedAudio);
-    const coverUrl = coverFile
-      ? getS3Url(uploadedCover)
-      : null;
+    const coverUrl = coverFile ? getS3Url(uploadedCover) : null;
 
     if (!audioUrl) {
       throw new Error(
-        "Audio upload completed but no audio URL was returned. Check uploadMiddleware.js."
+        "Audio uploaded but no audio URL was returned. Check uploadMiddleware.js."
       );
     }
 
+    if (coverFile && !coverUrl) {
+      throw new Error(
+        "Cover uploaded but no cover URL was returned."
+      );
+    }
+
+    const createdBy = req.user?.id || null;
+
+    // 11. Save song and its SHA-256 hash
     const result = await pool.query(
       `
       INSERT INTO songs (
@@ -598,6 +645,7 @@ const createSong = async (req, res) => {
         language,
         lyrics,
         audio_url,
+        audio_sha256,
         cover_url,
         artist_id,
         album_id,
@@ -608,8 +656,8 @@ const createSong = async (req, res) => {
         created_by
       )
       VALUES (
-        $1, $2, $3, $4, $5, $6,
-        $7, $8, $9, $10, $11, $12, $13
+        $1, $2, $3, $4, $5, $6, $7,
+        $8, $9, $10, $11, $12, $13, $14
       )
       RETURNING *
       `,
@@ -619,6 +667,7 @@ const createSong = async (req, res) => {
         language,
         lyrics || "",
         audioUrl,
+        audioSha256,
         coverUrl,
         artistId,
         albumId,
@@ -645,7 +694,7 @@ const createSong = async (req, res) => {
       constraint: error.constraint,
     });
 
-    // Remove uploaded files if the database insert failed.
+    // Roll back new S3 uploads if the database insert failed.
     if (!databaseSaved) {
       if (uploadedAudio) {
         await deleteUploadedObject(uploadedAudio).catch(
@@ -668,6 +717,18 @@ const createSong = async (req, res) => {
           }
         );
       }
+    }
+
+    // Handle PostgreSQL unique-index duplicate errors.
+    if (
+      error.code === "23505" &&
+      error.constraint === "songs_audio_sha256_unique"
+    ) {
+      return res.status(409).json({
+        success: false,
+        code: "DUPLICATE_AUDIO",
+        message: "This audio file already exists in your songs.",
+      });
     }
 
     if (error.code === "23503") {
@@ -702,6 +763,7 @@ const createSong = async (req, res) => {
     });
   }
 };
+
 
 /* =========================================================
    DELETE SONG
@@ -838,6 +900,11 @@ const getAdminSongById = async (req, res) => {
    UPDATE SONG
 ========================================================= */
 
+
+/* =========================================================
+   UPDATE SONG - WITH DUPLICATE AUDIO CHECK
+========================================================= */
+
 const updateSong = async (req, res) => {
   let uploadedAudio = null;
   let uploadedCover = null;
@@ -859,6 +926,7 @@ const updateSong = async (req, res) => {
       featured,
     } = req.body || {};
 
+    // 1. Load existing song
     const existingResult = await pool.query(
       `SELECT * FROM songs WHERE id = $1`,
       [id]
@@ -873,10 +941,7 @@ const updateSong = async (req, res) => {
 
     const existingSong = existingResult.rows[0];
 
-    /*
-     * Preserve the existing update behavior: title is
-     * required by this endpoint.
-     */
+    // 2. Validate title
     if (typeof title !== "string" || !title.trim()) {
       return res.status(400).json({
         success: false,
@@ -884,6 +949,7 @@ const updateSong = async (req, res) => {
       });
     }
 
+    // 3. Validate moods
     let songMoods;
 
     try {
@@ -899,6 +965,7 @@ const updateSong = async (req, res) => {
       });
     }
 
+    // 4. Validate language
     const selectedLanguage = String(
       language || existingSong.language || "Telugu"
     ).trim();
@@ -911,11 +978,7 @@ const updateSong = async (req, res) => {
       });
     }
 
-    /*
-     * Preserve existing relationships when a field is
-     * omitted. An empty string explicitly clears that
-     * relationship, if the database column permits NULL.
-     */
+    // 5. Preserve omitted relationships; allow explicit clearing
     let artistId;
     let albumId;
     let categoryId;
@@ -948,35 +1011,12 @@ const updateSong = async (req, res) => {
       });
     }
 
-    /*
-     * Validate only references that are supplied or
-     * retained. These checks do not couple one relationship
-     * to another.
-     */
+    // 6. Validate referenced records
     try {
-      await validateOptionalReference(
-        "artists",
-        artistId,
-        "artist"
-      );
-
-      await validateOptionalReference(
-        "albums",
-        albumId,
-        "album"
-      );
-
-      await validateOptionalReference(
-        "categories",
-        categoryId,
-        "category"
-      );
-
-      await validateOptionalReference(
-        "ministries",
-        ministryId,
-        "ministry"
-      );
+      await validateOptionalReference("artists", artistId, "artist");
+      await validateOptionalReference("albums", albumId, "album");
+      await validateOptionalReference("categories", categoryId, "category");
+      await validateOptionalReference("ministries", ministryId, "ministry");
     } catch (error) {
       return res.status(400).json({
         success: false,
@@ -984,18 +1024,44 @@ const updateSong = async (req, res) => {
       });
     }
 
+    // 7. Check whether replacement files were supplied
     const newAudioFile = req.files?.audio?.[0] || null;
     const newCoverFile = req.files?.cover?.[0] || null;
 
-    // Keep existing media unless replacements are provided.
+    // Preserve the current hash if audio is not being replaced.
+    let audioSha256 = existingSong.audio_sha256 || null;
+
+    // 8. Check replacement audio BEFORE uploading it to S3
+    if (newAudioFile) {
+      audioSha256 = getAudioSha256(newAudioFile);
+
+      const duplicateResult = await pool.query(
+        `
+        SELECT id, title, title_english, language
+        FROM songs
+        WHERE audio_sha256 = $1
+          AND id <> $2
+        LIMIT 1
+        `,
+        [audioSha256, id]
+      );
+
+      if (duplicateResult.rows.length > 0) {
+        return res.status(409).json({
+          success: false,
+          code: "DUPLICATE_AUDIO",
+          message: "This audio file already exists in another song.",
+          existingSong: duplicateResult.rows[0],
+        });
+      }
+    }
+
+    // 9. Preserve existing URLs unless replacements are uploaded
     let audioUrl = existingSong.audio_url;
     let coverUrl = existingSong.cover_url;
 
     if (newAudioFile) {
-      uploadedAudio = await uploadToS3(
-        newAudioFile,
-        "audio"
-      );
+      uploadedAudio = await uploadToS3(newAudioFile, "audio");
 
       if (!uploadedAudio) {
         throw new Error("Audio upload failed");
@@ -1011,10 +1077,7 @@ const updateSong = async (req, res) => {
     }
 
     if (newCoverFile) {
-      uploadedCover = await uploadToS3(
-        newCoverFile,
-        "covers"
-      );
+      uploadedCover = await uploadToS3(newCoverFile, "covers");
 
       if (!uploadedCover) {
         throw new Error("Cover upload failed");
@@ -1029,11 +1092,13 @@ const updateSong = async (req, res) => {
       }
     }
 
+    // 10. Preserve featured value when omitted
     const isFeatured =
       featured === undefined
         ? existingSong.featured
         : parseBoolean(featured);
 
+    // 11. Update song and audio hash
     const result = await pool.query(
       `
       UPDATE songs
@@ -1043,30 +1108,26 @@ const updateSong = async (req, res) => {
         language = $3,
         lyrics = $4,
         audio_url = $5,
-        cover_url = $6,
-        artist_id = $7,
-        album_id = $8,
-        category_id = $9,
-        featured = $10,
-        ministry_id = $11,
-        moods = $12
-      WHERE id = $13
+        audio_sha256 = $6,
+        cover_url = $7,
+        artist_id = $8,
+        album_id = $9,
+        category_id = $10,
+        featured = $11,
+        ministry_id = $12,
+        moods = $13
+      WHERE id = $14
       RETURNING *
       `,
       [
         title.trim(),
-
         title_english === undefined
           ? existingSong.title_english
           : String(title_english).trim() || null,
-
         selectedLanguage,
-
-        lyrics === undefined
-          ? existingSong.lyrics
-          : lyrics || "",
-
+        lyrics === undefined ? existingSong.lyrics : lyrics || "",
         audioUrl,
+        audioSha256,
         coverUrl,
         artistId,
         albumId,
@@ -1080,10 +1141,8 @@ const updateSong = async (req, res) => {
 
     databaseUpdated = true;
 
-    /*
-     * Delete replaced media only after the database update
-     * has succeeded and only if no other song uses it.
-     */
+    // 12. Remove replaced media only after successful DB update.
+    // The helper preserves objects still referenced by another song.
     if (
       newAudioFile &&
       existingSong.audio_url &&
@@ -1113,10 +1172,7 @@ const updateSong = async (req, res) => {
       constraint: error.constraint,
     });
 
-    /*
-     * Roll back only newly uploaded objects if the
-     * database update did not complete.
-     */
+    // Roll back new uploads if the database update failed.
     if (!databaseUpdated && uploadedAudio) {
       await deleteUploadedObject(uploadedAudio).catch(
         (cleanupError) => {
@@ -1137,6 +1193,18 @@ const updateSong = async (req, res) => {
           );
         }
       );
+    }
+
+    // Handle PostgreSQL unique-index duplicate errors.
+    if (
+      error.code === "23505" &&
+      error.constraint === "songs_audio_sha256_unique"
+    ) {
+      return res.status(409).json({
+        success: false,
+        code: "DUPLICATE_AUDIO",
+        message: "This audio file already exists in your songs.",
+      });
     }
 
     if (error.code === "23503") {
@@ -1171,6 +1239,7 @@ const updateSong = async (req, res) => {
     });
   }
 };
+
 
 /* =========================================================
    GET ALL SONG REPORTS - ADMIN
