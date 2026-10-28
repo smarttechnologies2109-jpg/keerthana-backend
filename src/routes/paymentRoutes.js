@@ -1,62 +1,16 @@
-const express =
-  require("express");
 
-
-/* =========================================================
-   AUTH MIDDLEWARE
-========================================================= */
+const express = require("express");
 
 const {
   authMiddleware,
-} =
-  require(
-    "../middleware/authMiddleware"
-  );
-
-
-/* =========================================================
-   PAYMENT CONTROLLER
-========================================================= */
+} = require("../middleware/authMiddleware");
 
 const {
   createPaymentOrder,
   verifyPayment,
-} =
-  require(
-    "../controllers/paymentController"
-  );
+} = require("../controllers/paymentController");
 
-
-const router =
-  express.Router();
-
-
-/* =========================================================
-   DEBUG
-
-   Remove this after everything works.
-========================================================= */
-
-console.log(
-  "PAYMENT ROUTE DEBUG:",
-  {
-    authMiddleware:
-      typeof authMiddleware,
-
-    createPaymentOrder:
-      typeof createPaymentOrder,
-
-    verifyPayment:
-      typeof verifyPayment,
-  }
-);
-
-
-/* =========================================================
-   CREATE RAZORPAY ORDER
-
-   POST /api/payments/create-order
-========================================================= */
+const router = express.Router();
 
 router.post(
   "/create-order",
@@ -64,23 +18,10 @@ router.post(
   createPaymentOrder
 );
 
-
-/* =========================================================
-   VERIFY RAZORPAY PAYMENT
-
-   POST /api/payments/verify
-========================================================= */
-
 router.post(
   "/verify",
   authMiddleware,
   verifyPayment
 );
 
-
-/* =========================================================
-   EXPORT
-========================================================= */
-
-module.exports =
-  router;
+module.exports = router;

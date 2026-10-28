@@ -924,14 +924,6 @@ app.use(
   "/api/users",
   userRoutes
 );
-// =========================================================
-// USER PROFILE ROUTES
-// =========================================================
-
-app.use(
-  "/api/users",
-  userRoutes
-);
 
 // =========================================================
 // ADMIN ROUTES
@@ -1019,14 +1011,7 @@ app.use(
   "/api/owner/music",
   ownerMusicRoutes
 );
-// =========================================================
-// OWNER MUSIC ROUTES
-// =========================================================
 
-app.use(
-  "/api/owner/music",
-  ownerMusicRoutes
-);
 
 
 app.use("/api/moods", moodsRoutes);
