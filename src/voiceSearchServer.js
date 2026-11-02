@@ -398,21 +398,24 @@ function attachVoiceSearch(httpServer) {
           socket.close(1000, "Transcription complete");
         }
       }
-    } catch (error) {
-      console.error(
-        "AWS Transcribe voice search error:",
-        error
-      );
+} catch (error) {
+  console.error("========== KEERTHANA TRANSCRIBE ERROR ==========");
+  console.error("Error name:", error?.name);
+  console.error("Error message:", error?.message);
+  console.error("HTTP status:", error?.$metadata?.httpStatusCode);
+  console.error("AWS request ID:", error?.$metadata?.requestId);
+  console.error("AWS region:", AWS_REGION);
+  console.error("================================================");
 
-      safeSend(socket, {
-        type: "error",
-        message: getSafeAwsErrorMessage(error),
-      });
+  safeSend(socket, {
+    type: "error",
+    message: getSafeAwsErrorMessage(error),
+  });
 
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.close(1011, "Transcription failed");
-      }
-    } finally {
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.close(1011, "Transcription failed");
+  }
+} finally {
       finishInput();
 
       if (streamTimer) {
