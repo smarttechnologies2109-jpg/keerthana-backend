@@ -1,25 +1,26 @@
+
 const {
   TranscribeStreamingClient,
   StartStreamTranscriptionCommand,
 } = require("@aws-sdk/client-transcribe-streaming");
 
-const { WebSocketServer, WebSocket } = require("ws");
+const {
+  WebSocketServer,
+  WebSocket,
+} = require("ws");
+
+// ======================================================
+// CONFIGURATION
+// ======================================================
 
 const AWS_REGION =
   process.env.AWS_REGION || "ap-south-1";
 
-const LANGUAGE_OPTIONS = [
-  "te-IN",
-  "ml-IN",
-  "hi-IN",
-  "kn-IN",
-  "ta-IN",
-  "en-IN",
-];
-
 const STREAM_PATH = "/api/voice-search/stream";
+
 const MAX_STREAM_MS = 20000;
 const MAX_AUDIO_BYTES = 16000 * 2 * 20;
+
 const MAX_CONNECTIONS_PER_IP = 2;
 const MAX_STARTS_PER_MINUTE = 6;
 
@@ -34,6 +35,10 @@ const ALLOWED_ORIGINS = new Set([
   "http://localhost",
 ]);
 
+// ======================================================
+// ASYNC AUDIO QUEUE
+// ======================================================
+
 class AsyncAudioQueue {
   constructor() {
     this.values = [];
@@ -47,7 +52,10 @@ class AsyncAudioQueue {
     const waiter = this.waiters.shift();
 
     if (waiter) {
-      waiter({ value, done: false });
+      waiter({
+        value,
+        done: false,
+      });
     } else {
       this.values.push(value);
     }
@@ -91,6 +99,10 @@ class AsyncAudioQueue {
   }
 }
 
+// ======================================================
+// WEBSOCKET HELPERS
+// ======================================================
+
 function safeSend(socket, payload) {
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(payload));
@@ -101,6 +113,10 @@ function getClientIp(request) {
   return request.socket.remoteAddress || "unknown";
 }
 
+// ======================================================
+// RATE LIMITER
+// ======================================================
+
 function createRateLimiter() {
   const startsByIp = new Map();
   const activeByIp = new Map();
@@ -109,15 +125,22 @@ function createRateLimiter() {
     canStart(ip) {
       const now = Date.now();
 
-      const recent = (startsByIp.get(ip) || [])
-        .filter((timestamp) => now - timestamp < 60000);
+      const recent = (
+        startsByIp.get(ip) || []
+      ).filter(
+        (timestamp) => now - timestamp < 60000
+      );
 
       if (recent.length >= MAX_STARTS_PER_MINUTE) {
         startsByIp.set(ip, recent);
         return false;
       }
 
-      startsByIp.set(ip, [...recent, now]);
+      startsByIp.set(ip, [
+        ...recent,
+        now,
+      ]);
+
       return true;
     },
 
@@ -136,7 +159,8 @@ function createRateLimiter() {
     },
 
     disconnected(ip) {
-      const count = activeByIp.get(ip) || 0;
+      const count =
+        activeByIp.get(ip) || 0;
 
       if (count <= 1) {
         activeByIp.delete(ip);
@@ -146,6 +170,10 @@ function createRateLimiter() {
     },
   };
 }
+
+// ======================================================
+// SAFE CLIENT ERROR MESSAGES
+// ======================================================
 
 function getSafeAwsErrorMessage(error) {
   const name = String(error?.name || "");
@@ -157,8 +185,8 @@ function getSafeAwsErrorMessage(error) {
     /not authorized|access denied|permission/i.test(message)
   ) {
     return (
-      "Voice search is waiting for AWS ECS Transcribe permission. " +
-      "Please try again after the backend permission is enabled."
+      "Voice search is waiting for AWS Transcribe permission. " +
+      "Please try again later."
     );
   }
 
@@ -168,12 +196,16 @@ function getSafeAwsErrorMessage(error) {
   ) {
     return (
       "AWS voice-search configuration is invalid. " +
-      "Please contact support."
+      "Please try again later."
     );
   }
 
   return "Voice recognition failed. Please try again.";
 }
+
+// ======================================================
+// MAIN WEBSOCKET FUNCTION
+// ======================================================
 
 function attachVoiceSearch(httpServer) {
   const wss = new WebSocketServer({
@@ -189,6 +221,10 @@ function attachVoiceSearch(httpServer) {
       region: AWS_REGION,
     });
 
+  // ====================================================
+  // HANDLE WEBSOCKET UPGRADE
+  // ====================================================
+
   httpServer.on("upgrade", (request, socket, head) => {
     let pathname;
 
@@ -202,17 +238,21 @@ function attachVoiceSearch(httpServer) {
       return;
     }
 
+    // Ignore unrelated WebSocket endpoints.
     if (pathname !== STREAM_PATH) {
-      // Do not interfere with other WebSocket endpoints.
       return;
     }
 
     const origin = request.headers.origin;
 
-    if (origin && !ALLOWED_ORIGINS.has(origin)) {
+    if (
+      origin &&
+      !ALLOWED_ORIGINS.has(origin)
+    ) {
       socket.write(
         "HTTP/1.1 403 Forbidden\r\n\r\n"
       );
+
       socket.destroy();
       return;
     }
@@ -226,6 +266,7 @@ function attachVoiceSearch(httpServer) {
       socket.write(
         "HTTP/1.1 429 Too Many Requests\r\n\r\n"
       );
+
       socket.destroy();
       return;
     }
@@ -235,201 +276,376 @@ function attachVoiceSearch(httpServer) {
       socket,
       head,
       (ws) => {
-        wss.emit("connection", ws, request, ip);
+        wss.emit(
+          "connection",
+          ws,
+          request,
+          ip
+        );
       }
     );
   });
 
-  wss.on("connection", async (socket, request, ip) => {
-    limiter.connected(ip);
+  // ====================================================
+  // WEBSOCKET CONNECTION
+  // ====================================================
 
-    const audioQueue = new AsyncAudioQueue();
+  wss.on(
+    "connection",
+    async (socket, request, ip) => {
+      limiter.connected(ip);
 
-    let totalAudioBytes = 0;
-    let acceptingAudio = true;
-    let disconnected = false;
-    let streamTimer = null;
-    let limiterReleased = false;
+      console.log(
+        "KEERTHANA voice connection started:",
+        ip
+      );
 
-    const releaseLimiter = () => {
-      if (limiterReleased) return;
-      limiterReleased = true;
-      limiter.disconnected(ip);
-    };
+      const audioQueue = new AsyncAudioQueue();
 
-    const finishInput = () => {
-      if (!acceptingAudio) return;
+      let totalAudioBytes = 0;
+      let acceptingAudio = true;
+      let disconnected = false;
+      let streamTimer = null;
+      let limiterReleased = false;
 
-      acceptingAudio = false;
-      audioQueue.end();
-    };
+      // ----------------------------------------------
+      // RELEASE RATE LIMITER
+      // ----------------------------------------------
 
-    socket.on("message", (data, isBinary) => {
-      if (isBinary) {
+      const releaseLimiter = () => {
+        if (limiterReleased) return;
+
+        limiterReleased = true;
+        limiter.disconnected(ip);
+      };
+
+      // ----------------------------------------------
+      // FINISH AUDIO INPUT
+      // ----------------------------------------------
+
+      const finishInput = () => {
         if (!acceptingAudio) return;
 
-       console.log("KEERTHANA audio received:", {
-  bytes: chunk.length,
-  totalBytes: totalAudioBytes + chunk.length,
-});
-        totalAudioBytes += chunk.length;
+        acceptingAudio = false;
+        audioQueue.end();
+      };
 
-        if (totalAudioBytes > MAX_AUDIO_BYTES) {
-          safeSend(socket, {
-            type: "limit",
-            message: "Voice search reached its 20-second limit.",
-          });
+      // =================================================
+      // RECEIVE BROWSER AUDIO
+      // =================================================
 
-          finishInput();
+      socket.on("message", (data, isBinary) => {
+        if (isBinary) {
+          if (!acceptingAudio) return;
+
+          // IMPORTANT: Convert incoming audio to Buffer.
+          const chunk = Buffer.from(data);
+
+          totalAudioBytes += chunk.length;
+
+          console.log(
+            "KEERTHANA audio received:",
+            {
+              bytes: chunk.length,
+              totalBytes: totalAudioBytes,
+            }
+          );
+
+          // Maximum audio size protection.
+          if (
+            totalAudioBytes > MAX_AUDIO_BYTES
+          ) {
+            safeSend(socket, {
+              type: "limit",
+              message:
+                "Voice search reached its 20-second limit.",
+            });
+
+            finishInput();
+            return;
+          }
+
+          // Push microphone audio to AWS queue.
+          audioQueue.push(chunk);
+
           return;
         }
 
-        audioQueue.push(chunk);
-        return;
-      }
+        // Handle text WebSocket messages.
+        let message;
 
-      let message;
+        try {
+          message = JSON.parse(
+            data.toString()
+          );
+        } catch {
+          return;
+        }
 
-      try {
-        message = JSON.parse(data.toString());
-      } catch {
-        return;
-      }
+        if (message.type === "stop") {
+          console.log(
+            "KEERTHANA voice recording stopped."
+          );
 
-      if (message.type === "stop") {
-        finishInput();
-      }
-    });
-
-    socket.on("close", () => {
-      disconnected = true;
-      finishInput();
-
-      if (streamTimer) {
-        clearTimeout(streamTimer);
-      }
-
-      releaseLimiter();
-    });
-
-    socket.on("error", (error) => {
-      console.error(
-        "Voice WebSocket error:",
-        error.message
-      );
-
-      finishInput();
-    });
-
-    streamTimer = setTimeout(() => {
-      safeSend(socket, {
-        type: "limit",
-        message: "Voice search is limited to 20 seconds.",
+          finishInput();
+        }
       });
 
-      finishInput();
-    }, MAX_STREAM_MS);
+      // =================================================
+      // WEBSOCKET CLOSE
+      // =================================================
 
-    try {
-      const audioStream = (async function* () {
-        for await (const chunk of audioQueue) {
-          yield {
-            AudioEvent: {
-              AudioChunk: chunk,
-            },
-          };
+      socket.on("close", () => {
+        console.log(
+          "KEERTHANA voice WebSocket disconnected."
+        );
+
+        disconnected = true;
+
+        finishInput();
+
+        if (streamTimer) {
+          clearTimeout(streamTimer);
         }
-      })();
 
-      const command =
-        new StartStreamTranscriptionCommand({
-          IdentifyLanguage: true,
-          LanguageOptions: LANGUAGE_OPTIONS,
-          MediaEncoding: "pcm",
-          MediaSampleRateHertz: 16000,
-          AudioStream: audioStream,
+        releaseLimiter();
+      });
+
+      // =================================================
+      // WEBSOCKET ERROR
+      // =================================================
+
+      socket.on("error", (error) => {
+        console.error(
+          "KEERTHANA WebSocket error:",
+          error.message
+        );
+
+        finishInput();
+      });
+
+      // =================================================
+      // 20-SECOND STREAM LIMIT
+      // =================================================
+
+      streamTimer = setTimeout(() => {
+        safeSend(socket, {
+          type: "limit",
+          message:
+            "Voice search is limited to 20 seconds.",
         });
 
-      const response =
-        await transcribeClient.send(command);
+        finishInput();
+      }, MAX_STREAM_MS);
 
-      let detectedLanguage =
-        response.LanguageCode || null;
+      // =================================================
+      // AWS TRANSCRIBE STREAMING
+      // =================================================
 
-      if (response.TranscriptResultStream) {
-        for await (
-          const event of response.TranscriptResultStream
-        ) {
-          if (disconnected) break;
+      try {
+        // Convert audio queue to AWS AudioStream.
+        const audioStream = (async function* () {
+          for await (const chunk of audioQueue) {
+            yield {
+              AudioEvent: {
+                AudioChunk: chunk,
+              },
+            };
+          }
+        })();
 
-          const results =
-            event.TranscriptEvent
-              ?.Transcript
-              ?.Results || [];
+        // TEMPORARY TEST: TELUGU ONLY.
+        // Restore automatic language identification
+        // after this basic transcription test works.
 
-          for (const result of results) {
-            const text =
-              result.Alternatives?.[0]?.Transcript || "";
+        const command =
+          new StartStreamTranscriptionCommand({
+            LanguageCode: "te-IN",
+            MediaEncoding: "pcm",
+            MediaSampleRateHertz: 16000,
+            AudioStream: audioStream,
+          });
 
-            if (!text.trim()) continue;
+        console.log(
+          "Starting AWS Transcribe:",
+          {
+            region: AWS_REGION,
+            language: "te-IN",
+            sampleRate: 16000,
+          }
+        );
 
-            if (result.LanguageCode) {
-              detectedLanguage = result.LanguageCode;
+        const response =
+          await transcribeClient.send(command);
+
+        let detectedLanguage =
+          response.LanguageCode || "te-IN";
+
+        console.log(
+          "AWS Transcribe stream started."
+        );
+
+        // =================================================
+        // READ TRANSCRIPTION RESULTS
+        // =================================================
+
+        if (response.TranscriptResultStream) {
+          for await (
+            const event of response.TranscriptResultStream
+          ) {
+            if (disconnected) break;
+
+            const results =
+              event.TranscriptEvent
+                ?.Transcript
+                ?.Results || [];
+
+            for (const result of results) {
+              const transcript =
+                result.Alternatives?.[0]?.Transcript || "";
+
+              if (!transcript.trim()) {
+                continue;
+              }
+
+              if (result.LanguageCode) {
+                detectedLanguage =
+                  result.LanguageCode;
+              }
+
+              console.log(
+                "KEERTHANA transcript:",
+                {
+                  text: transcript,
+                  partial: Boolean(result.IsPartial),
+                  language: detectedLanguage,
+                }
+              );
+
+              safeSend(socket, {
+                type: "transcript",
+                text: transcript,
+                isPartial: Boolean(
+                  result.IsPartial
+                ),
+                languageCode:
+                  result.LanguageCode ||
+                  detectedLanguage,
+              });
             }
-
-            safeSend(socket, {
-              type: "transcript",
-              text,
-              isPartial: Boolean(result.IsPartial),
-              languageCode:
-                result.LanguageCode || detectedLanguage,
-            });
           }
         }
-      }
 
-      if (!disconnected) {
+        // =================================================
+        // TRANSCRIPTION COMPLETE
+        // =================================================
+
+        if (!disconnected) {
+          console.log(
+            "KEERTHANA transcription completed."
+          );
+
+          safeSend(socket, {
+            type: "complete",
+            languageCode: detectedLanguage,
+          });
+
+          if (
+            socket.readyState === WebSocket.OPEN
+          ) {
+            socket.close(
+              1000,
+              "Transcription complete"
+            );
+          }
+        }
+      } catch (error) {
+        // =================================================
+        // AWS ERROR DIAGNOSTICS
+        // =================================================
+
+        console.error(
+          "========== KEERTHANA TRANSCRIBE ERROR =========="
+        );
+
+        console.error(
+          "Error name:",
+          error?.name
+        );
+
+        console.error(
+          "Error message:",
+          error?.message
+        );
+
+        console.error(
+          "HTTP status:",
+          error?.$metadata?.httpStatusCode
+        );
+
+        console.error(
+          "AWS request ID:",
+          error?.$metadata?.requestId
+        );
+
+        console.error(
+          "AWS region:",
+          AWS_REGION
+        );
+
+        console.error(
+          "AWS error cause:",
+          error?.cause
+        );
+
+        console.error(
+          "AWS error details:",
+          error?.$response
+        );
+
+        console.error(
+          "================================================"
+        );
+
         safeSend(socket, {
-          type: "complete",
-          languageCode: detectedLanguage,
+          type: "error",
+          message:
+            getSafeAwsErrorMessage(error),
         });
 
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.close(1000, "Transcription complete");
+        if (
+          socket.readyState === WebSocket.OPEN
+        ) {
+          socket.close(
+            1011,
+            "Transcription failed"
+          );
+        }
+      } finally {
+        finishInput();
+
+        if (streamTimer) {
+          clearTimeout(streamTimer);
+        }
+
+        if (disconnected) {
+          releaseLimiter();
         }
       }
-} catch (error) {
-  console.error("========== KEERTHANA TRANSCRIBE ERROR ==========");
-  console.error("Error name:", error?.name);
-  console.error("Error message:", error?.message);
-  console.error("HTTP status:", error?.$metadata?.httpStatusCode);
-  console.error("AWS request ID:", error?.$metadata?.requestId);
-  console.error("AWS region:", AWS_REGION);
-  console.error("================================================");
-
-  safeSend(socket, {
-    type: "error",
-    message: getSafeAwsErrorMessage(error),
-  });
-
-  if (socket.readyState === WebSocket.OPEN) {
-    socket.close(1011, "Transcription failed");
-  }
-} finally {
-      finishInput();
-
-      if (streamTimer) {
-        clearTimeout(streamTimer);
-      }
-
-      if (disconnected) {
-        releaseLimiter();
-      }
     }
-  });
+  );
+
+  // ====================================================
+  // SERVER READY
+  // ====================================================
 
   console.log(
     `KEERTHANA voice-search WebSocket attached: ${STREAM_PATH}`
+  );
+
+  console.log(
+    "AWS Transcribe region:",
+    AWS_REGION
   );
 
   return wss;
