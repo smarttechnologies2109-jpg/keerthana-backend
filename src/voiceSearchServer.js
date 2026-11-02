@@ -15,7 +15,7 @@ const LANGUAGE_OPTIONS = [
   "kn-IN",
   "ta-IN",
   "en-IN",
-].join(",");
+];
 
 const STREAM_PATH = "/api/voice-search/stream";
 const MAX_STREAM_MS = 20000;
@@ -268,7 +268,10 @@ function attachVoiceSearch(httpServer) {
       if (isBinary) {
         if (!acceptingAudio) return;
 
-        const chunk = Buffer.from(data);
+       console.log("KEERTHANA audio received:", {
+  bytes: chunk.length,
+  totalBytes: totalAudioBytes + chunk.length,
+});
         totalAudioBytes += chunk.length;
 
         if (totalAudioBytes > MAX_AUDIO_BYTES) {
