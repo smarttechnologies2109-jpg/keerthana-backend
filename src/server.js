@@ -75,6 +75,9 @@ const notificationRoutes = require("./routes/notificationRoutes");
 
 const ownerMusicRoutes =
   require("./routes/ownerMusicRoutes");
+
+  const http = require("http");
+const attachVoiceSearch = require("./voiceSearchServer");
 // =========================================================
 // OWNER MUSIC ROUTES
 // =========================================================
@@ -86,6 +89,11 @@ const ownerMusicRoutes =
 // =========================================================
 
 const app = express();
+
+const httpServer = http.createServer(app);
+
+attachVoiceSearch(httpServer);
+
 
 // =========================================================
 // PORT
@@ -1104,7 +1112,7 @@ async function startServer() {
   try {
     await testDatabase();
 
-    app.listen(
+    httpServer.listen(
       PORT,
       () => {
         console.log(

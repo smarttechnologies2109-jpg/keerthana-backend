@@ -13,6 +13,7 @@
   "type": "commonjs",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1147.0",
+    "@aws-sdk/client-transcribe-streaming": "^3.1161.0",
     "@aws-sdk/rds-signer": "^3.1146.0",
     "@aws-sdk/s3-request-presigner": "^3.1152.0",
     "axios": "^1.20.0",
@@ -27,7 +28,8 @@
     "openai": "^7.23.0",
     "pg": "^8.23.0",
     "react-icons": "^5.7.0",
-    "react-router-dom": "^7.18.3"
+    "react-router-dom": "^7.18.3",
+    "ws": "^8.22.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

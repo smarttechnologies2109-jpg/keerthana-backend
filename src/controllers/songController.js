@@ -278,14 +278,6 @@ const getSongById = async (req, res) => {
     ];
 
 
-    if (userLanguage) {
-
-      values.push(userLanguage);
-
-      query += `
-        AND s.language = $2
-      `;
-    }
 
 
     const result =
@@ -480,7 +472,7 @@ const getSongsByMood = async (req, res) => {
       });
     }
 
-    const userLanguage = getUserLanguage(req);
+    
 
     const values = [mood];
 
@@ -576,7 +568,7 @@ const browseSongsForMood = async (req, res) => {
       });
     }
 
-    const userLanguage = getUserLanguage(req);
+    
     const values = [mood];
 
     let sql = `
@@ -875,7 +867,7 @@ const removeSongFromMood = async (req, res) => {
 
 const getAvailableMoods = async (req, res) => {
   try {
-    const userLanguage = getUserLanguage(req);
+   
     const values = [];
 
     let sql = `
