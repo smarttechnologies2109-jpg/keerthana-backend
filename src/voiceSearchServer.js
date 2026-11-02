@@ -1,3 +1,4 @@
+"use strict";
 
 const {
   TranscribeStreamingClient,
@@ -12,11 +13,20 @@ const {
 const AWS_REGION = process.env.AWS_REGION || "ap-south-1";
 const STREAM_PATH = "/api/voice-search/stream";
 
-const MAX_STREAM_MS = 20000;
-const MAX_AUDIO_BYTES = 16000 * 2 * 20;
+const MAX_STREAM_MS = 20_000;
+const MAX_AUDIO_BYTES = 16_000 * 2 * 20; // 20 seconds, mono PCM16
 
 const MAX_CONNECTIONS_PER_IP = 2;
 const MAX_STARTS_PER_MINUTE = 6;
+
+const SUPPORTED_LANGUAGES = new Set([
+  "te-IN",
+  "hi-IN",
+  "en-IN",
+  "ml-IN",
+  "kn-IN",
+  "ta-IN",
+]);
 
 const ALLOWED_ORIGINS = new Set([
   "http://localhost:5173",
@@ -53,7 +63,7 @@ class AsyncAudioQueue {
 
     this.ended = true;
 
-    while (this.waiters.length) {
+    while (this.waiters.length > 0) {
       this.waiters.shift()({
         value: undefined,
         done: true,
@@ -66,7 +76,7 @@ class AsyncAudioQueue {
   }
 
   next() {
-    if (this.values.length) {
+    if (this.values.length > 0) {
       return Promise.resolve({
         value: this.values.shift(),
         done: false,
@@ -87,8 +97,25 @@ class AsyncAudioQueue {
 }
 
 function safeSend(socket, payload) {
-  if (socket.readyState === WebSocket.OPEN) {
+  if (socket.readyState !== WebSocket.OPEN) return;
+
+  try {
     socket.send(JSON.stringify(payload));
+  } catch (error) {
+    console.error("KEERTHANA WebSocket send failed:", error.message);
+  }
+}
+
+function getRequestedLanguage(request) {
+  try {
+    const url = new URL(request.url, "http://localhost");
+    const requested = url.searchParams.get("language") || "te-IN";
+
+    return SUPPORTED_LANGUAGES.has(requested)
+      ? requested
+      : "te-IN";
+  } catch {
+    return "te-IN";
   }
 }
 
@@ -99,9 +126,8 @@ function createRateLimiter() {
   return {
     canStart(ip) {
       const now = Date.now();
-
       const recent = (startsByIp.get(ip) || []).filter(
-        (timestamp) => now - timestamp < 60000
+        (timestamp) => now - timestamp < 60_000
       );
 
       if (recent.length >= MAX_STARTS_PER_MINUTE) {
@@ -147,9 +173,18 @@ function getSafeAwsErrorMessage(error) {
 
   if (
     name === "BadRequestException" ||
-    name === "InvalidParameterException"
+    name === "InvalidParameterException" ||
+    name === "ValidationException"
   ) {
-    return "AWS voice-search configuration is invalid.";
+    return "AWS Transcribe rejected the audio or language configuration.";
+  }
+
+  if (
+    name === "LimitExceededException" ||
+    name === "ServiceUnavailableException" ||
+    name === "InternalFailureException"
+  ) {
+    return "AWS voice recognition is temporarily unavailable. Please try again.";
   }
 
   return "Voice recognition failed. Please try again.";
@@ -172,16 +207,13 @@ function attachVoiceSearch(httpServer) {
     let pathname;
 
     try {
-      pathname = new URL(
-        request.url,
-        "http://localhost"
-      ).pathname;
+      pathname = new URL(request.url, "http://localhost").pathname;
     } catch {
       socket.destroy();
       return;
     }
 
-    // Leave other WebSocket endpoints untouched.
+    // Do not interfere with other WebSocket endpoints.
     if (pathname !== STREAM_PATH) return;
 
     const origin = request.headers.origin;
@@ -208,8 +240,7 @@ function attachVoiceSearch(httpServer) {
   wss.on("connection", async (socket, request, ip) => {
     limiter.connected(ip);
 
-    console.log("KEERTHANA voice connection:", ip);
-
+    const selectedLanguage = getRequestedLanguage(request);
     const audioQueue = new AsyncAudioQueue();
 
     let totalAudioBytes = 0;
@@ -218,16 +249,20 @@ function attachVoiceSearch(httpServer) {
     let streamTimer = null;
     let limiterReleased = false;
 
+    console.log("KEERTHANA voice connection:", {
+      ip,
+      language: selectedLanguage,
+      region: AWS_REGION,
+    });
+
     const releaseLimiter = () => {
       if (limiterReleased) return;
-
       limiterReleased = true;
       limiter.disconnected(ip);
     };
 
     const finishInput = () => {
       if (!acceptingAudio) return;
-
       acceptingAudio = false;
       audioQueue.end();
     };
@@ -237,22 +272,25 @@ function attachVoiceSearch(httpServer) {
         if (!acceptingAudio) return;
 
         const chunk = Buffer.from(data);
+        if (chunk.length === 0) return;
 
-        if (!chunk.length) return;
+        // PCM16 must contain complete 16-bit samples.
+        if (chunk.length % 2 !== 0) {
+          safeSend(socket, {
+            type: "error",
+            message: "Invalid audio data received. Please restart voice search.",
+          });
+          finishInput();
+          return;
+        }
 
         totalAudioBytes += chunk.length;
-
-        console.log("KEERTHANA audio received:", {
-          bytes: chunk.length,
-          totalBytes: totalAudioBytes,
-        });
 
         if (totalAudioBytes > MAX_AUDIO_BYTES) {
           safeSend(socket, {
             type: "limit",
             message: "Voice search reached its 20-second limit.",
           });
-
           finishInput();
           return;
         }
@@ -270,19 +308,15 @@ function attachVoiceSearch(httpServer) {
       }
 
       if (message.type === "stop") {
-        console.log("KEERTHANA recording stopped.");
         finishInput();
       }
     });
 
     socket.on("close", () => {
-      console.log("KEERTHANA WebSocket disconnected.");
-
       disconnected = true;
       finishInput();
 
       if (streamTimer) clearTimeout(streamTimer);
-
       releaseLimiter();
     });
 
@@ -296,7 +330,6 @@ function attachVoiceSearch(httpServer) {
         type: "limit",
         message: "Voice search is limited to 20 seconds.",
       });
-
       finishInput();
     }, MAX_STREAM_MS);
 
@@ -311,54 +344,67 @@ function attachVoiceSearch(httpServer) {
         }
       })();
 
-      // Diagnostic mode: test Telugu only first.
       const command = new StartStreamTranscriptionCommand({
-        LanguageCode: "te-IN",
+        LanguageCode: selectedLanguage,
         MediaEncoding: "pcm",
-        MediaSampleRateHertz: 16000,
+        MediaSampleRateHertz: 16_000,
         AudioStream: audioStream,
       });
 
       console.log("Starting AWS Transcribe:", {
         region: AWS_REGION,
-        language: "te-IN",
-        sampleRate: 16000,
+        language: selectedLanguage,
+        sampleRate: 16_000,
+        encoding: "pcm",
       });
 
       const response = await transcribeClient.send(command);
 
-      console.log("AWS Transcribe stream started.");
+      console.log("AWS Transcribe stream started:", {
+        language: selectedLanguage,
+      });
 
-      let detectedLanguage = response.LanguageCode || "te-IN";
+      let finalTranscript = "";
 
       if (response.TranscriptResultStream) {
         for await (const event of response.TranscriptResultStream) {
           if (disconnected) break;
+
+          // AWS can return an exception as a stream event.
+          const streamError =
+            event.BadRequestException ||
+            event.ConflictException ||
+            event.InternalFailureException ||
+            event.LimitExceededException ||
+            event.ServiceUnavailableException;
+
+          if (streamError) {
+            throw new Error(
+              streamError.Message || "AWS Transcribe stream error"
+            );
+          }
 
           const results =
             event.TranscriptEvent?.Transcript?.Results || [];
 
           for (const result of results) {
             const transcript =
-              result.Alternatives?.[0]?.Transcript || "";
+              result.Alternatives?.[0]?.Transcript?.trim() || "";
 
-            if (!transcript.trim()) continue;
+            if (!transcript) continue;
 
-            if (result.LanguageCode) {
-              detectedLanguage = result.LanguageCode;
+            if (!result.IsPartial) {
+              finalTranscript = [finalTranscript, transcript]
+                .filter(Boolean)
+                .join(" ")
+                .trim();
             }
-
-            console.log("KEERTHANA transcript:", {
-              text: transcript,
-              partial: Boolean(result.IsPartial),
-              language: detectedLanguage,
-            });
 
             safeSend(socket, {
               type: "transcript",
               text: transcript,
               isPartial: Boolean(result.IsPartial),
-              languageCode: result.LanguageCode || detectedLanguage,
+              languageCode: selectedLanguage,
             });
           }
         }
@@ -367,7 +413,8 @@ function attachVoiceSearch(httpServer) {
       if (!disconnected) {
         safeSend(socket, {
           type: "complete",
-          languageCode: detectedLanguage,
+          languageCode: selectedLanguage,
+          text: finalTranscript,
         });
 
         if (socket.readyState === WebSocket.OPEN) {
@@ -382,7 +429,6 @@ function attachVoiceSearch(httpServer) {
       console.error("AWS request ID:", error?.$metadata?.requestId);
       console.error("AWS region:", AWS_REGION);
       console.error("AWS cause:", error?.cause);
-      console.error("AWS details:", error?.$response);
       console.error("================================================");
 
       safeSend(socket, {
@@ -397,7 +443,6 @@ function attachVoiceSearch(httpServer) {
       finishInput();
 
       if (streamTimer) clearTimeout(streamTimer);
-
       if (disconnected) releaseLimiter();
     }
   });
@@ -405,7 +450,6 @@ function attachVoiceSearch(httpServer) {
   console.log(
     `KEERTHANA voice-search WebSocket attached: ${STREAM_PATH}`
   );
-
   console.log("AWS Transcribe region:", AWS_REGION);
 
   return wss;
