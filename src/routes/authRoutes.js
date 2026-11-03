@@ -3,6 +3,7 @@ const express = require("express");
 const {
   register,
   login,
+  refreshSession,
   adminLogin,
 
   ownerLogin,
@@ -38,7 +39,14 @@ router.post(
   login
 );
 
+/* =========================================================
+   REFRESH AUTHENTICATION SESSION
+========================================================= */
 
+router.post(
+  "/refresh",
+  refreshSession
+);
 /* =========================================================
    ADMIN AUTHENTICATION
 ========================================================= */

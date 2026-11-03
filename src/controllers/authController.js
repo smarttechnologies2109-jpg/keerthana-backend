@@ -75,9 +75,7 @@ const hashOTP = (otp) => {
     .digest("hex");
 };
 
-// ==========================================
-// NORMAL USER REGISTER
-// ==========================================
+
 
 // ==========================================
 // NORMAL USER REGISTER
@@ -257,17 +255,123 @@ const register = async (req, res) => {
 
     const user = result.rows[0];
 
-    const token = generateToken(
+ const session = await createAuthSession(user, req);
+/* =========================================================
+   KEERTHANA SESSION CONFIGURATION
+========================================================= */
+
+// Short-lived access token
+const ACCESS_TOKEN_EXPIRES_IN = "15m";
+
+// Refresh session expires after 30 days of inactivity
+const REFRESH_TOKEN_DAYS = 30;
+
+
+/* =========================================================
+   GENERATE ACCESS TOKEN
+========================================================= */
+
+const generateAccessToken = (userId, role) => {
+  return jwt.sign(
+    {
+      id: userId,
+      role: role,
+    },
+    process.env.JWT_SECRET,
+    {
+      expiresIn: ACCESS_TOKEN_EXPIRES_IN,
+    }
+  );
+};
+
+
+/* =========================================================
+   GENERATE SECURE REFRESH TOKEN
+========================================================= */
+
+const generateRefreshToken = () => {
+  return crypto.randomBytes(64).toString("hex");
+};
+
+
+/* =========================================================
+   HASH REFRESH TOKEN BEFORE DATABASE STORAGE
+========================================================= */
+
+const hashRefreshToken = (token) => {
+  return crypto
+    .createHash("sha256")
+    .update(token)
+    .digest("hex");
+};
+
+
+/* =========================================================
+   REFRESH SESSION EXPIRY
+========================================================= */
+
+const getRefreshTokenExpiry = () => {
+  const expiry = new Date();
+
+  expiry.setDate(
+    expiry.getDate() + REFRESH_TOKEN_DAYS
+  );
+
+  return expiry;
+};
+
+/* =========================================================
+   CREATE AUTHENTICATION SESSION
+========================================================= */
+
+const createAuthSession = async (user, req) => {
+  const refreshToken = generateRefreshToken();
+
+  const refreshTokenHash = hashRefreshToken(refreshToken);
+
+  const expiresAt = getRefreshTokenExpiry();
+
+  const deviceInfo = String(
+    req.headers["user-agent"] || "Unknown device"
+  ).slice(0, 500);
+
+  await pool.query(
+    `
+      INSERT INTO auth_sessions (
+        user_id,
+        refresh_token_hash,
+        expires_at,
+        device_info
+      )
+      VALUES ($1, $2, $3, $4)
+    `,
+    [
       user.id,
-      user.role
-    );
+      refreshTokenHash,
+      expiresAt,
+      deviceInfo,
+    ]
+  );
 
-    return res.status(201).json({
-      message: "Account created successfully",
-      token,
-      user: getUserResponse(user),
-    });
+  const accessToken = generateAccessToken(
+    user.id,
+    user.role
+  );
 
+  return {
+    accessToken,
+    refreshToken,
+    expiresAt,
+  };
+};
+ return res.status(201).json({
+  message: "Account created successfully",
+  token: session.accessToken,
+  accessToken: session.accessToken,
+  refreshToken: session.refreshToken,
+  expiresAt: session.expiresAt,
+  user: getUserResponse(user),
+});
   } catch (error) {
     console.error(
       "Register error:",
@@ -375,16 +479,16 @@ const login = async (req, res) => {
 
     const user = result.rows[0];
 
-  const token = generateToken(
-  user.id,
-  user.role
-);
+const session = await createAuthSession(user, req);
 
     return res.status(200).json({
-      message: "Login successful",
-      token,
-      user: getUserResponse(user),
-    });
+  message: "Login successful",
+  token: session.accessToken,
+  accessToken: session.accessToken,
+  refreshToken: session.refreshToken,
+  expiresAt: session.expiresAt,
+  user: getUserResponse(user),
+});
 
   } catch (error) {
     console.error("Login error:", error);
@@ -1054,6 +1158,106 @@ const ownerResetPassword = async (req, res) => {
       success: false,
       message:
         "Unable to reset password",
+    });
+  }
+};
+
+/* =========================================================
+   REFRESH AUTHENTICATION SESSION
+========================================================= */
+
+const refreshSession = async (req, res) => {
+  const refreshToken = req.body?.refreshToken;
+
+  if (!refreshToken) {
+    return res.status(400).json({
+      success: false,
+      message: "Refresh token is required",
+    });
+  }
+
+  try {
+    const oldTokenHash = hashRefreshToken(refreshToken);
+
+    // Generate the replacement refresh token
+    const newRefreshToken = generateRefreshToken();
+    const newTokenHash = hashRefreshToken(newRefreshToken);
+    const expiresAt = getRefreshTokenExpiry();
+
+    // Atomically rotate the existing session token
+    const result = await pool.query(
+      `
+        UPDATE auth_sessions
+        SET
+          refresh_token_hash = $1,
+          expires_at = $2
+        WHERE
+          refresh_token_hash = $3
+          AND expires_at > NOW()
+          AND revoked_at IS NULL
+        RETURNING user_id
+      `,
+      [
+        newTokenHash,
+        expiresAt,
+        oldTokenHash,
+      ]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        message: "Refresh session expired or invalid. Please login again.",
+      });
+    }
+
+    const userResult = await pool.query(
+      `
+        SELECT
+          id,
+          name,
+          email,
+          mobile,
+          role,
+          profile_image,
+          language
+        FROM users
+        WHERE id = $1
+        LIMIT 1
+      `,
+      [result.rows[0].user_id]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    const accessToken = generateAccessToken(
+      user.id,
+      user.role
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Session refreshed successfully",
+      token: accessToken,
+      accessToken,
+      refreshToken: newRefreshToken,
+      expiresAt,
+      user: getUserResponse(user),
+    });
+
+  } catch (error) {
+    console.error("Refresh session error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to refresh session",
     });
   }
 };
@@ -1882,8 +2086,9 @@ const adminResetPassword = async (req, res) => {
 module.exports = {
   register,
   login,
-  adminLogin,
+  refreshSession,
 
+  adminLogin,
   ownerLogin,
   ownerForgotPassword,
   ownerVerifyOTP,
