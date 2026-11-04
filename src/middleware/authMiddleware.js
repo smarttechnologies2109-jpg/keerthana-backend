@@ -1,78 +1,66 @@
+
 const jwt = require("jsonwebtoken");
 const pool = require("../config/db");
-
 
 /* =========================================================
    AUTHENTICATION MIDDLEWARE
 ========================================================= */
 
 const authMiddleware = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({
+      success: false,
+      message: "Authentication required",
+    });
+  }
+
+  const token = authHeader.slice(7).trim();
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: "Authentication token missing",
+    });
+  }
+
+  // Verify JWT separately from the database query.
+  let decoded;
+
   try {
-
-    /* =====================================
-       GET AUTHORIZATION HEADER
-    ===================================== */
-
-    const authHeader =
-      req.headers.authorization;
-
-
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
+  } catch (error) {
     if (
-      !authHeader ||
-      !authHeader.startsWith("Bearer ")
+      error.name === "TokenExpiredError" ||
+      error.name === "JsonWebTokenError" ||
+      error.name === "NotBeforeError"
     ) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Invalid or expired token",
       });
     }
 
+    console.error("JWT verification error:", error.message);
 
-    /* =====================================
-       GET TOKEN
-    ===================================== */
+    return res.status(500).json({
+      success: false,
+      message: "Authentication verification failed",
+    });
+  }
 
-    const token =
-      authHeader.split(" ")[1];
-
-
-    if (!token) {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication token missing",
-      });
-    }
-
-
-    /* =====================================
-       VERIFY TOKEN
-    ===================================== */
-
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET
-    );
-
-
-    /* =====================================
-       GET CURRENT USER FROM DATABASE
-
-       We get language from database instead
-       of putting language inside JWT.
-    ===================================== */
-
+  // Database errors must NOT be reported as expired tokens.
+  try {
     const result = await pool.query(
       `
-      SELECT
-        id,
-        role,
-        language
-      FROM users
-      WHERE id = $1
+        SELECT id, role, language
+        FROM users
+        WHERE id = $1
+        LIMIT 1
       `,
       [decoded.id]
     );
-
 
     if (result.rows.length === 0) {
       return res.status(401).json({
@@ -81,13 +69,7 @@ const authMiddleware = async (req, res, next) => {
       });
     }
 
-
     const user = result.rows[0];
-
-
-    /* =====================================
-       SAVE USER TO REQUEST
-    ===================================== */
 
     req.user = {
       id: user.id,
@@ -95,129 +77,62 @@ const authMiddleware = async (req, res, next) => {
       language: user.language || "Telugu",
     };
 
-
-    console.log(
-      "Authenticated user:",
-      req.user
-    );
-
-
-    next();
-
+    return next();
   } catch (error) {
-
     console.error(
-      "Authentication error:",
+      "Authentication database error:",
       error.message
     );
 
-
-    return res.status(401).json({
+    return res.status(503).json({
       success: false,
-      message: "Invalid or expired token",
+      code: "AUTH_DATABASE_UNAVAILABLE",
+      message: "Authentication service temporarily unavailable",
     });
   }
 };
 
-
 /* =========================================================
    OPTIONAL AUTHENTICATION MIDDLEWARE
-
-   - If user is logged in:
-       req.user will be available
-   - If user is not logged in:
-       request continues normally
-
-   This keeps existing public song browsing working.
 ========================================================= */
 
 const optionalAuthMiddleware = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    req.user = null;
+    return next();
+  }
+
+  const token = authHeader.slice(7).trim();
+
+  if (!token) {
+    req.user = null;
+    return next();
+  }
+
   try {
-
-    /* =====================================
-       GET AUTHORIZATION HEADER
-    ===================================== */
-
-    const authHeader =
-      req.headers.authorization;
-
-
-    /* =====================================
-       NO TOKEN
-
-       Continue as public user.
-    ===================================== */
-
-    if (
-      !authHeader ||
-      !authHeader.startsWith("Bearer ")
-    ) {
-      req.user = null;
-      return next();
-    }
-
-
-    /* =====================================
-       GET TOKEN
-    ===================================== */
-
-    const token =
-      authHeader.split(" ")[1];
-
-
-    if (!token) {
-      req.user = null;
-      return next();
-    }
-
-
-    /* =====================================
-       VERIFY TOKEN
-    ===================================== */
-
     const decoded = jwt.verify(
       token,
       process.env.JWT_SECRET
     );
 
-
-    /* =====================================
-       GET CURRENT USER
-
-       Get latest language from database.
-    ===================================== */
-
     const result = await pool.query(
       `
-      SELECT
-        id,
-        role,
-        language
-      FROM users
-      WHERE id = $1
+        SELECT id, role, language
+        FROM users
+        WHERE id = $1
+        LIMIT 1
       `,
       [decoded.id]
     );
-
-
-    /* =====================================
-       USER NOT FOUND
-
-       Treat request as public.
-    ===================================== */
 
     if (result.rows.length === 0) {
       req.user = null;
       return next();
     }
 
-
     const user = result.rows[0];
-
-
-    /* =====================================
-       SAVE USER TO REQUEST
-    ===================================== */
 
     req.user = {
       id: user.id,
@@ -225,45 +140,23 @@ const optionalAuthMiddleware = async (req, res, next) => {
       language: user.language || "Telugu",
     };
 
-
-    console.log(
-      "Optional authenticated user:",
-      req.user
-    );
-
-
-    next();
-
+    return next();
   } catch (error) {
-
-    /*
-      Important:
-      For optional authentication, an invalid
-      token should not break public song browsing.
-    */
-
-    console.log(
+    console.error(
       "Optional authentication skipped:",
       error.message
     );
 
     req.user = null;
-
-    next();
+    return next();
   }
 };
-
 
 /* =========================================================
    ADMIN ONLY MIDDLEWARE
 ========================================================= */
 
 const adminOnly = (req, res, next) => {
-
-  /* =====================================
-     USER MUST BE AUTHENTICATED
-  ===================================== */
-
   if (!req.user) {
     return res.status(401).json({
       success: false,
@@ -271,49 +164,19 @@ const adminOnly = (req, res, next) => {
     });
   }
 
-
-  /* =====================================
-     NORMALIZE ROLE
-  ===================================== */
-
-  const role = String(
-    req.user.role || ""
-  )
+  const role = String(req.user.role || "")
     .trim()
     .toUpperCase();
 
-
-  console.log(
-    "Admin middleware role:",
-    role
-  );
-
-
-  /* =====================================
-     CHECK ADMIN ROLE
-  ===================================== */
-
   if (role !== "ADMIN") {
-
-    console.log(
-      "Admin access denied:",
-      req.user
-    );
-
     return res.status(403).json({
       success: false,
       message: "Admin access required",
     });
   }
 
-
-  /* =====================================
-     ADMIN VERIFIED
-  ===================================== */
-
-  next();
+  return next();
 };
-
 
 /* =========================================================
    EXPORTS

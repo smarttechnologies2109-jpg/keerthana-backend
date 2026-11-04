@@ -2476,223 +2476,153 @@ const ownerResetPassword = async (req, res) => {
 
 
 
-const refreshSession = async (req, res) => {
 
+const refreshSession = async (req, res) => {
   const refreshToken = req.body?.refreshToken;
 
-
-
   if (
-
     !refreshToken ||
-
-    typeof refreshToken !== "string"
-
+    typeof refreshToken !== "string" ||
+    !refreshToken.trim()
   ) {
-
     return res.status(400).json({
-
       success: false,
-
       message: "Refresh token is required",
-
     });
-
   }
 
-
+  let client;
+  let transactionStarted = false;
 
   try {
+    client = await pool.connect();
 
-    // Hash existing refresh token
+    await client.query("BEGIN");
+    transactionStarted = true;
 
     const oldTokenHash = hashRefreshToken(refreshToken);
 
-
-
-    // Generate replacement refresh token
-
-    const newRefreshToken = generateRefreshToken();
-
-
-
-    const newTokenHash = hashRefreshToken(
-
-      newRefreshToken
-
+    /*
+     * Find and lock the session.
+     * Fetch user details BEFORE rotating the token.
+     */
+    const sessionResult = await client.query(
+      `
+        SELECT
+          s.id AS session_id,
+          u.id,
+          u.name,
+          u.email,
+          u.mobile,
+          u.role,
+          u.profile_image,
+          u.language
+        FROM auth_sessions s
+        INNER JOIN users u
+          ON u.id = s.user_id
+        WHERE s.refresh_token_hash = $1
+          AND s.expires_at > NOW()
+          AND s.revoked_at IS NULL
+        FOR UPDATE OF s
+      `,
+      [oldTokenHash]
     );
 
+    if (sessionResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
 
+      return res.status(401).json({
+        success: false,
+        message: "Refresh session expired or invalid. Please login again.",
+      });
+    }
 
+    const user = sessionResult.rows[0];
+    const sessionId = user.session_id;
+
+    /*
+     * Generate replacement tokens.
+     */
+    const newRefreshToken = generateRefreshToken();
+    const newTokenHash = hashRefreshToken(newRefreshToken);
     const expiresAt = getRefreshTokenExpiry();
 
-
-
-    // Atomically rotate the refresh token
-
-    const result = await pool.query(
-
-      `
-
-        UPDATE auth_sessions
-
-        SET
-
-          refresh_token_hash = $1,
-
-          expires_at = $2
-
-        WHERE refresh_token_hash = $3
-
-          AND expires_at > NOW()
-
-          AND revoked_at IS NULL
-
-        RETURNING user_id
-
-      `,
-
-      [
-
-        newTokenHash,
-
-        expiresAt,
-
-        oldTokenHash,
-
-      ]
-
-    );
-
-
-
-    // Invalid or expired session
-
-    if (result.rows.length === 0) {
-
-      return res.status(401).json({
-
-        success: false,
-
-        message:
-
-          "Refresh session expired or invalid. Please login again.",
-
-      });
-
-    }
-
-
-
-    // Retrieve user details
-
-    const userResult = await pool.query(
-
-      `
-
-        SELECT
-
-          id,
-
-          name,
-
-          email,
-
-          mobile,
-
-          role,
-
-          profile_image,
-
-          language
-
-        FROM users
-
-        WHERE id = $1
-
-        LIMIT 1
-
-      `,
-
-      [result.rows[0].user_id]
-
-    );
-
-
-
-    if (userResult.rows.length === 0) {
-
-      return res.status(401).json({
-
-        success: false,
-
-        message: "User not found",
-
-      });
-
-    }
-
-
-
-    const user = userResult.rows[0];
-
-
-
-    // Generate new access token
-
     const accessToken = generateAccessToken(
-
       user.id,
-
       user.role
-
     );
 
+    /*
+     * Rotate the refresh token inside the transaction.
+     */
+    const updateResult = await client.query(
+      `
+        UPDATE auth_sessions
+        SET
+          refresh_token_hash = $1,
+          expires_at = $2
+        WHERE id = $3
+          AND revoked_at IS NULL
+      `,
+      [
+        newTokenHash,
+        expiresAt,
+        sessionId,
+      ]
+    );
 
+    if (updateResult.rowCount !== 1) {
+      throw new Error("Refresh token rotation failed");
+    }
+
+    /*
+     * Commit only after all database operations succeed.
+     */
+    await client.query("COMMIT");
+    transactionStarted = false;
 
     return res.status(200).json({
-
       success: true,
-
       message: "Session refreshed successfully",
-
-
-
       token: accessToken,
-
       accessToken,
-
-
-
       refreshToken: newRefreshToken,
-
       expiresAt,
-
-
-
       user: getUserResponse(user),
-
     });
-
-
 
   } catch (error) {
+    if (client && transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error(
+          "Refresh transaction rollback failed:",
+          rollbackError.message
+        );
+      }
+    }
 
-    console.error("Refresh session error:", error);
+    console.error(
+      "Refresh session error:",
+      error.message,
+      error.code || ""
+    );
 
-
-
-    return res.status(500).json({
-
+    return res.status(503).json({
       success: false,
-
-      message: "Unable to refresh session",
-
+      code: "REFRESH_SERVICE_UNAVAILABLE",
+      message: "Session service temporarily unavailable. Please retry.",
     });
 
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
-
 };
+
 
 
 
