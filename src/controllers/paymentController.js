@@ -4,12 +4,9 @@ const pool = require("../config/db");
 
 /* =========================================================
    CASHFREE CONFIGURATION
-
-   Supports both naming conventions:
+   Supports:
    CASHFREE_APP_ID / CASHFREE_SECRET_KEY
    CASHFREE_CLIENT_ID / CASHFREE_CLIENT_SECRET
-
-   Your current .env uses APP_ID and SECRET_KEY.
 ========================================================= */
 
 const CASHFREE_CLIENT_ID =
@@ -22,7 +19,9 @@ const CASHFREE_CLIENT_SECRET =
 
 const CASHFREE_ENV = String(
   process.env.CASHFREE_ENV || "sandbox"
-).trim().toLowerCase();
+)
+  .trim()
+  .toLowerCase();
 
 const CASHFREE_API_VERSION =
   process.env.CASHFREE_API_VERSION || "2023-08-01";
@@ -61,7 +60,6 @@ async function cashfreeRequest(path, options = {}) {
     `${CASHFREE_BASE_URL}${path}`,
     {
       ...options,
-
       headers: {
         "Content-Type": "application/json",
         "x-api-version": CASHFREE_API_VERSION,
@@ -116,26 +114,46 @@ function getPaymentEnvironment() {
     : "sandbox";
 }
 
+/*
+  Normalize Indian mobile numbers.
+
+  Accepted examples:
+  9876543210
+  +919876543210
+  919876543210
+  09876543210
+*/
+function normalizeIndianMobile(value) {
+  let mobile = String(value || "").replace(/\D/g, "");
+
+  if (mobile.length === 12 && mobile.startsWith("91")) {
+    mobile = mobile.slice(2);
+  } else if (
+    mobile.length === 11 &&
+    mobile.startsWith("0")
+  ) {
+    mobile = mobile.slice(1);
+  }
+
+  if (!/^[6-9]\d{9}$/.test(mobile)) {
+    return null;
+  }
+
+  return mobile;
+}
+
 /* =========================================================
    CREATE PAYMENT ORDER
 
    POST /api/payments/create-order
-
-   Requires authentication.
 
    Frontend sends:
    {
      "plan_id": 2
    }
 
-   Returns:
-   {
-     success,
-     order_id,
-     payment_session_id,
-     environment,
-     plan
-   }
+   Mobile number is required.
+   Email address is optional.
 ========================================================= */
 
 async function createPaymentOrder(req, res) {
@@ -143,9 +161,7 @@ async function createPaymentOrder(req, res) {
     const userId = req.user?.id;
     const planId = Number(req.body?.plan_id);
 
-    /* -----------------------------------------
-       AUTHENTICATION
-    ----------------------------------------- */
+    /* AUTHENTICATION */
 
     if (!userId) {
       return res.status(401).json({
@@ -154,9 +170,7 @@ async function createPaymentOrder(req, res) {
       });
     }
 
-    /* -----------------------------------------
-       VALIDATE PLAN ID
-    ----------------------------------------- */
+    /* VALIDATE PLAN ID */
 
     if (
       !Number.isInteger(planId) ||
@@ -168,9 +182,7 @@ async function createPaymentOrder(req, res) {
       });
     }
 
-    /* -----------------------------------------
-       VALIDATE CASHFREE CONFIGURATION
-    ----------------------------------------- */
+    /* VALIDATE CASHFREE CONFIGURATION */
 
     if (
       !CASHFREE_CLIENT_ID ||
@@ -187,9 +199,7 @@ async function createPaymentOrder(req, res) {
       });
     }
 
-    /* -----------------------------------------
-       GET SUBSCRIPTION PLAN
-    ----------------------------------------- */
+    /* GET SUBSCRIPTION PLAN */
 
     const planResult = await pool.query(
       `SELECT
@@ -237,9 +247,7 @@ async function createPaymentOrder(req, res) {
       });
     }
 
-    /* -----------------------------------------
-       GET USER DETAILS
-    ----------------------------------------- */
+    /* GET USER DETAILS */
 
     const userResult = await pool.query(
       `SELECT
@@ -261,38 +269,40 @@ async function createPaymentOrder(req, res) {
       });
     }
 
-    if (!user.email || !user.mobile) {
+    /* MOBILE NUMBER IS REQUIRED */
+
+    if (!String(user.mobile || "").trim()) {
       return res.status(400).json({
         success: false,
+        code: "MOBILE_REQUIRED",
         message:
-          "Please add your email and mobile number before payment.",
+          "Please add your mobile number to continue with your Premium subscription. Email is optional.",
       });
     }
 
-    const customerPhone = String(user.mobile)
-      .replace(/\D/g, "");
+    /* VALIDATE AND NORMALIZE INDIAN MOBILE */
 
-    if (!/^\d{10}$/.test(customerPhone)) {
+    const customerPhone = normalizeIndianMobile(
+      user.mobile
+    );
+
+    if (!customerPhone) {
       return res.status(400).json({
         success: false,
+        code: "INVALID_MOBILE",
         message:
-          "A valid 10-digit Indian mobile number is required.",
+          "Please enter a valid 10-digit Indian mobile number.",
       });
     }
 
-    /* -----------------------------------------
-       GENERATE UNIQUE ORDER ID
-    ----------------------------------------- */
+    /* GENERATE UNIQUE ORDER ID */
 
     const orderId =
-      `keerthana_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+      `keerthana_${Date.now()}_${crypto
+        .randomBytes(4)
+        .toString("hex")}`;
 
-    /* -----------------------------------------
-       CASHFREE RETURN URL
-
-       Cashfree redirects the customer to:
-       /premium?cashfree_order_id=ORDER_ID
-    ----------------------------------------- */
+    /* CASHFREE RETURN URL */
 
     const frontendUrl =
       process.env.FRONTEND_URL.replace(/\/+$/, "");
@@ -300,9 +310,29 @@ async function createPaymentOrder(req, res) {
     const returnUrl =
       `${frontendUrl}/premium?cashfree_order_id={order_id}`;
 
-    /* -----------------------------------------
-       CREATE ORDER WITH CASHFREE
-    ----------------------------------------- */
+    /* CUSTOMER DETAILS
+       Email is included only when available.
+    */
+
+    const customerDetails = {
+      customer_id: `user_${user.id}`,
+
+      customer_name: String(
+        user.name || "KEERTHANA User"
+      )
+        .replace(/[^a-zA-Z0-9 ]/g, "")
+        .slice(0, 100),
+
+      customer_phone: customerPhone,
+
+      ...(user.email && String(user.email).trim()
+        ? {
+            customer_email: String(user.email).trim(),
+          }
+        : {}),
+    };
+
+    /* CREATE ORDER WITH CASHFREE */
 
     const cashfreeOrder = await cashfreeRequest(
       "/orders",
@@ -316,19 +346,7 @@ async function createPaymentOrder(req, res) {
 
           order_currency: "INR",
 
-          customer_details: {
-            customer_id: `user_${user.id}`,
-
-            customer_name: String(
-              user.name || "KEERTHANA User"
-            )
-              .replace(/[^a-zA-Z0-9 ]/g, "")
-              .slice(0, 100),
-
-            customer_email: user.email,
-
-            customer_phone: customerPhone,
-          },
+          customer_details: customerDetails,
 
           order_meta: {
             return_url: returnUrl,
@@ -353,12 +371,7 @@ async function createPaymentOrder(req, res) {
       );
     }
 
-    /* -----------------------------------------
-       SAVE ORDER IN EXISTING PAYMENTS TABLE
-
-       Preserve the existing payment records
-       and existing subscription architecture.
-    ----------------------------------------- */
+    /* SAVE ORDER IN EXISTING PAYMENTS TABLE */
 
     await pool.query(
       `INSERT INTO payments
@@ -383,9 +396,7 @@ async function createPaymentOrder(req, res) {
       ]
     );
 
-    /* -----------------------------------------
-       SEND CHECKOUT DETAILS TO FRONTEND
-    ----------------------------------------- */
+    /* SEND CHECKOUT DETAILS TO FRONTEND */
 
     return res.status(201).json({
       success: true,
@@ -405,7 +416,6 @@ async function createPaymentOrder(req, res) {
         duration_days: plan.duration_days,
       },
     });
-
   } catch (error) {
     console.error(
       "Cashfree create order error:",
@@ -429,9 +439,8 @@ async function createPaymentOrder(req, res) {
      "order_id": "keerthana_..."
    }
 
-   IMPORTANT:
-   Payment is confirmed directly with Cashfree.
-   Frontend response alone cannot activate Premium.
+   Premium is activated only after server-side
+   confirmation from Cashfree.
 ========================================================= */
 
 async function verifyPayment(req, res) {
@@ -464,9 +473,7 @@ async function verifyPayment(req, res) {
 
     await client.query("BEGIN");
 
-    /* -----------------------------------------
-       FIND USER'S CASHFREE PAYMENT ORDER
-    ----------------------------------------- */
+    /* FIND USER'S CASHFREE PAYMENT ORDER */
 
     const result = await client.query(
       `SELECT
@@ -506,11 +513,7 @@ async function verifyPayment(req, res) {
       });
     }
 
-    /* -----------------------------------------
-       ALREADY VERIFIED
-
-       Avoid activating the same order twice.
-    ----------------------------------------- */
+    /* ALREADY VERIFIED */
 
     if (payment.status === "paid") {
       await client.query("COMMIT");
@@ -522,17 +525,13 @@ async function verifyPayment(req, res) {
       });
     }
 
-    /* -----------------------------------------
-       FETCH ORDER STATUS FROM CASHFREE
-    ----------------------------------------- */
+    /* FETCH ORDER STATUS FROM CASHFREE */
 
     const cashfreeOrder = await cashfreeRequest(
       `/orders/${encodeURIComponent(orderId)}`
     );
 
-    /* -----------------------------------------
-       FETCH PAYMENT DETAILS FROM CASHFREE
-    ----------------------------------------- */
+    /* FETCH PAYMENT DETAILS FROM CASHFREE */
 
     const cashfreePayments = await cashfreeRequest(
       `/orders/${encodeURIComponent(orderId)}/payments`
@@ -546,13 +545,7 @@ async function verifyPayment(req, res) {
           )
         : null;
 
-    /* -----------------------------------------
-       VALIDATE PAYMENT
-
-       Order must be PAID.
-       Payment must be SUCCESS.
-       Amount and currency must match.
-    ----------------------------------------- */
+    /* VALIDATE PAYMENT */
 
     const orderIsPaid =
       cashfreeOrder.order_status === "PAID";
@@ -560,15 +553,13 @@ async function verifyPayment(req, res) {
     const paymentIsSuccessful =
       Boolean(successfulPayment);
 
-    const amountIsCorrect =
-      amountsMatch(
-        cashfreeOrder.order_amount,
-        payment.amount
-      );
+    const amountIsCorrect = amountsMatch(
+      cashfreeOrder.order_amount,
+      payment.amount
+    );
 
     const currencyIsCorrect =
-      cashfreeOrder.order_currency ===
-      payment.currency;
+      cashfreeOrder.order_currency === payment.currency;
 
     if (
       !orderIsPaid ||
@@ -585,9 +576,7 @@ async function verifyPayment(req, res) {
       });
     }
 
-    /* -----------------------------------------
-       VALIDATE SUBSCRIPTION DURATION
-    ----------------------------------------- */
+    /* VALIDATE SUBSCRIPTION DURATION */
 
     const durationDays =
       Number(payment.duration_days);
@@ -603,12 +592,7 @@ async function verifyPayment(req, res) {
 
     const now = new Date();
 
-    /* -----------------------------------------
-       GET CURRENT SUBSCRIPTION
-
-       Preserve existing subscription if active.
-       Extend from its expiry date when applicable.
-    ----------------------------------------- */
+    /* GET CURRENT SUBSCRIPTION */
 
     const currentResult = await client.query(
       `SELECT
@@ -633,9 +617,7 @@ async function verifyPayment(req, res) {
       current.expires_at &&
       new Date(current.expires_at) > now
     ) {
-      baseDate = new Date(
-        current.expires_at
-      );
+      baseDate = new Date(current.expires_at);
     }
 
     const expiresAt = addDays(
@@ -647,9 +629,7 @@ async function verifyPayment(req, res) {
       successfulPayment.cf_payment_id
     );
 
-    /* -----------------------------------------
-       UPDATE EXISTING PAYMENT RECORD
-    ----------------------------------------- */
+    /* UPDATE EXISTING PAYMENT RECORD */
 
     await client.query(
       `UPDATE payments
@@ -663,9 +643,7 @@ async function verifyPayment(req, res) {
       ]
     );
 
-    /* -----------------------------------------
-       ACTIVATE OR UPDATE SUBSCRIPTION
-    ----------------------------------------- */
+    /* ACTIVATE OR UPDATE SUBSCRIPTION */
 
     if (current) {
       await client.query(
@@ -687,7 +665,6 @@ async function verifyPayment(req, res) {
           current.id,
         ]
       );
-
     } else {
       await client.query(
         `INSERT INTO subscriptions
@@ -716,9 +693,7 @@ async function verifyPayment(req, res) {
       );
     }
 
-    /* -----------------------------------------
-       COMMIT DATABASE TRANSACTION
-    ----------------------------------------- */
+    /* COMMIT DATABASE TRANSACTION */
 
     await client.query("COMMIT");
 
@@ -740,7 +715,6 @@ async function verifyPayment(req, res) {
         expires_at: expiresAt,
       },
     });
-
   } catch (error) {
     if (client) {
       try {
@@ -763,7 +737,6 @@ async function verifyPayment(req, res) {
       message:
         "Unable to verify payment. Please try again.",
     });
-
   } finally {
     if (client) {
       client.release();
