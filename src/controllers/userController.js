@@ -1,37 +1,42 @@
-// =========================================================
-// userController.js
-// KEERTHANA - User Profile Controller
-// =========================================================
 
 const pool = require("../config/db");
-const fs = require("fs");
-const path = require("path");
 
-// =========================================================
-// GET CURRENT USER PROFILE
-// GET /api/users/profile
-// =========================================================
+const {
+  uploadToS3,
+  deleteS3Object,
+  getProfileS3Key,
+} = require("../middleware/s3Upload");
+
+// =====================================================
+// SUPPORTED LANGUAGES
+// =====================================================
+
+const SUPPORTED_LANGUAGES = [
+  "Telugu",
+  "Hindi",
+  "English",
+  "Malayalam",
+  "Kannada",
+  "Tamil",
+];
+
+// =====================================================
+// GET USER PROFILE
+// =====================================================
 
 const getProfile = async (req, res) => {
   try {
-    // -----------------------------------------------------
-    // Authentication check
-    // -----------------------------------------------------
+    const userId = req.user?.id || req.user?.userId;
 
-    if (!req.user || !req.user.id) {
+    if (!userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "User authentication required.",
       });
     }
 
-    // -----------------------------------------------------
-    // Get user
-    // -----------------------------------------------------
-
     const result = await pool.query(
-      `
-      SELECT
+      `SELECT
         id,
         name,
         email,
@@ -41,323 +46,310 @@ const getProfile = async (req, res) => {
         language,
         created_at,
         updated_at
-      FROM users
-      WHERE id = $1
-      `,
-      [req.user.id]
+       FROM users
+       WHERE id = $1`,
+      [userId]
     );
-
-    // -----------------------------------------------------
-    // User not found
-    // -----------------------------------------------------
 
     if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "User not found",
+        message: "User profile not found.",
       });
     }
 
-    const user = result.rows[0];
-
-    // -----------------------------------------------------
-    // Response
-    // -----------------------------------------------------
-
     return res.status(200).json({
       success: true,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        mobile: user.mobile,
-        role: user.role,
-        profile_image: user.profile_image,
-        language: user.language || "Telugu",
-        created_at: user.created_at,
-        updated_at: user.updated_at,
-      },
+      user: result.rows[0],
     });
   } catch (error) {
-    console.error(
-      "GET PROFILE ERROR:",
-      error
-    );
+    console.error("Get profile error:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Failed to load profile",
-      error: error.message,
+      message: "Unable to fetch profile.",
     });
   }
 };
 
-
-// =========================================================
-// UPDATE CURRENT USER PROFILE
-// PUT /api/users/profile
-// =========================================================
+// =====================================================
+// UPDATE USER PROFILE
+//
+// Profile image:
+// Multer memoryStorage -> S3 profiles/
+//
+// PostgreSQL stores:
+// profiles/generated-filename.webp
+//
+// Mobile is preserved when not submitted.
+// =====================================================
 
 const updateProfile = async (req, res) => {
-  try {
-    // -----------------------------------------------------
-    // Authentication check
-    // -----------------------------------------------------
+  let newlyUploadedKey = null;
 
-    if (!req.user || !req.user.id) {
+  try {
+    const userId = req.user?.id || req.user?.userId;
+
+    if (!userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "User authentication required.",
       });
     }
 
-    const userId = req.user.id;
+    const {
+      name,
+      mobile,
+      language,
+    } = req.body;
 
-    // -----------------------------------------------------
-    // Get submitted values
-    // -----------------------------------------------------
-
-    const name =
-      typeof req.body.name === "string"
-        ? req.body.name.trim()
-        : "";
-
-    const mobile =
-      typeof req.body.mobile === "string"
-        ? req.body.mobile.trim()
-        : "";
-
-    const language =
-      typeof req.body.language === "string"
-        ? req.body.language.trim()
-        : "";
-
-    // -----------------------------------------------------
-    // Validate name
-    // -----------------------------------------------------
-
-    if (!name) {
-      return res.status(400).json({
-        success: false,
-        message: "Name is required",
-      });
-    }
-
-    if (name.length < 2) {
-      return res.status(400).json({
-        success: false,
-        message: "Name must contain at least 2 characters",
-      });
-    }
-
-    if (name.length > 100) {
-      return res.status(400).json({
-        success: false,
-        message: "Name must not exceed 100 characters",
-      });
-    }
-
-    // -----------------------------------------------------
-    // Supported languages
-    // -----------------------------------------------------
-
-    const allowedLanguages = [
-      "Telugu",
-      "Hindi",
-      "English",
-      "Malayalam",
-      "Kannada",
-      "Tamil",
-    ];
-
-    // -----------------------------------------------------
-    // Validate language
-    // -----------------------------------------------------
-
-    if (
-      language &&
-      !allowedLanguages.includes(language)
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid language selected",
-      });
-    }
-
-    // -----------------------------------------------------
-    // Validate mobile
-    // -----------------------------------------------------
-
-    if (mobile && mobile.length > 30) {
-      return res.status(400).json({
-        success: false,
-        message: "Mobile number is too long",
-      });
-    }
-
-    // -----------------------------------------------------
-    // Get existing user
-    // -----------------------------------------------------
+    // -------------------------------------------------
+    // GET EXISTING PROFILE
+    // -------------------------------------------------
 
     const existingResult = await pool.query(
-      `
-      SELECT
+      `SELECT
         id,
+        name,
+        mobile,
         profile_image,
         language
-      FROM users
-      WHERE id = $1
-      `,
+       FROM users
+       WHERE id = $1`,
       [userId]
     );
 
     if (existingResult.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "User not found",
+        message: "User profile not found.",
       });
     }
 
-    const existingUser =
-      existingResult.rows[0];
+    const existingUser = existingResult.rows[0];
 
-    // -----------------------------------------------------
-    // Determine final language
-    // -----------------------------------------------------
+    // -------------------------------------------------
+    // VALIDATE NAME
+    // -------------------------------------------------
 
-    const finalLanguage =
-      language ||
-      existingUser.language ||
-      "Telugu";
+    const updatedName =
+      name !== undefined
+        ? String(name).trim()
+        : existingUser.name;
 
-    // -----------------------------------------------------
-    // Determine uploaded image
-    // -----------------------------------------------------
-
-    let profileImage =
-      existingUser.profile_image || null;
-
-    if (req.file) {
-      profileImage =
-        `/uploads/profile/${req.file.filename}`;
+    if (
+      !updatedName ||
+      updatedName.length < 2 ||
+      updatedName.length > 100
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Name must be between 2 and 100 characters.",
+      });
     }
 
-    // -----------------------------------------------------
-    // Update database
-    // -----------------------------------------------------
+    // -------------------------------------------------
+    // VALIDATE LANGUAGE
+    // -------------------------------------------------
 
-    const result = await pool.query(
-      `
-      UPDATE users
-      SET
-        name = $1,
-        mobile = $2,
-        language = $3,
-        profile_image = $4,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = $5
-      RETURNING
-        id,
-        name,
-        email,
-        mobile,
-        role,
-        profile_image,
-        language,
-        created_at,
-        updated_at
-      `,
-      [
-        name,
-        mobile || null,
-        finalLanguage,
-        profileImage,
-        userId,
-      ]
-    );
+    const updatedLanguage =
+      language !== undefined
+        ? String(language).trim()
+        : existingUser.language;
 
-    // -----------------------------------------------------
-    // Return updated user
-    // -----------------------------------------------------
+    if (!SUPPORTED_LANGUAGES.includes(updatedLanguage)) {
+      return res.status(400).json({
+        success: false,
+        message: "Please select a supported language.",
+      });
+    }
 
-    const user = result.rows[0];
+    // -------------------------------------------------
+    // PRESERVE MOBILE IF NOT SUBMITTED
+    // -------------------------------------------------
+
+    let updatedMobile = existingUser.mobile;
+
+    if (mobile !== undefined) {
+      const cleanMobile = String(mobile).trim();
+
+      if (cleanMobile.length > 30) {
+        return res.status(400).json({
+          success: false,
+          message: "Mobile number cannot exceed 30 characters.",
+        });
+      }
+
+      updatedMobile = cleanMobile || null;
+    }
+
+    // -------------------------------------------------
+    // KEEP EXISTING PROFILE IMAGE
+    // -------------------------------------------------
+
+    let updatedProfileImage = existingUser.profile_image;
+
+    // -------------------------------------------------
+    // UPLOAD NEW PROFILE IMAGE TO S3
+    // -------------------------------------------------
+
+    if (req.file) {
+      const uploaded = await uploadToS3(
+        req.file,
+        "profiles"
+      );
+
+      if (!uploaded || !uploaded.key) {
+        throw new Error("Profile image upload to S3 failed.");
+      }
+
+      newlyUploadedKey = uploaded.key;
+      updatedProfileImage = uploaded.key;
+    }
+
+    // -------------------------------------------------
+    // UPDATE POSTGRESQL
+    // -------------------------------------------------
+
+    let updateResult;
+
+    try {
+      updateResult = await pool.query(
+        `UPDATE users
+         SET
+           name = $1,
+           mobile = $2,
+           language = $3,
+           profile_image = $4,
+           updated_at = NOW()
+         WHERE id = $5
+         RETURNING
+           id,
+           name,
+           email,
+           mobile,
+           role,
+           profile_image,
+           language,
+           created_at,
+           updated_at`,
+        [
+          updatedName,
+          updatedMobile,
+          updatedLanguage,
+          updatedProfileImage,
+          userId,
+        ]
+      );
+    } catch (databaseError) {
+      // Database update failed. Remove the newly uploaded
+      // image so an orphaned profile object is not left behind.
+      if (newlyUploadedKey) {
+        try {
+          await deleteS3Object(newlyUploadedKey);
+        } catch (cleanupError) {
+          console.error(
+            "Failed to clean up new profile image:",
+            cleanupError
+          );
+        }
+      }
+
+      throw databaseError;
+    }
+
+    const updatedUser = updateResult.rows[0];
+
+    // -------------------------------------------------
+    // DELETE OLD S3 PROFILE IMAGE AFTER DB SUCCESS
+    //
+    // Legacy /uploads/profile/... files are not deleted.
+    // Only old profiles/ S3 objects are eligible.
+    // -------------------------------------------------
+
+    if (
+      newlyUploadedKey &&
+      existingUser.profile_image &&
+      existingUser.profile_image !== newlyUploadedKey
+    ) {
+      const oldProfileKey = getProfileS3Key(
+        existingUser.profile_image
+      );
+
+      if (oldProfileKey) {
+        try {
+          await deleteS3Object(oldProfileKey);
+        } catch (deleteError) {
+          // Keep the successful profile update even if
+          // cleanup of the previous image fails.
+          console.error(
+            "Old profile image cleanup failed:",
+            deleteError
+          );
+        }
+      }
+    }
 
     return res.status(200).json({
       success: true,
-      message: "Profile updated successfully",
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        mobile: user.mobile,
-        role: user.role,
-        profile_image: user.profile_image,
-        language: user.language || "Telugu",
-        created_at: user.created_at,
-        updated_at: user.updated_at,
-      },
+      message: "Profile updated successfully.",
+      user: updatedUser,
     });
   } catch (error) {
-    console.error(
-      "UPDATE PROFILE ERROR:",
-      error
-    );
+    console.error("Update profile error:", error);
+
+    // Best-effort cleanup if an error occurred after upload
+    // but before the database update completed.
+    if (newlyUploadedKey) {
+      try {
+        const currentResult = await pool.query(
+          "SELECT profile_image FROM users WHERE id = $1",
+          [req.user?.id || req.user?.userId]
+        );
+
+        const currentImage =
+          currentResult.rows[0]?.profile_image;
+
+        if (currentImage !== newlyUploadedKey) {
+          await deleteS3Object(newlyUploadedKey);
+        }
+      } catch (cleanupError) {
+        console.error(
+          "Profile image cleanup error:",
+          cleanupError
+        );
+      }
+    }
 
     return res.status(500).json({
       success: false,
-      message: "Failed to update profile",
-      error: error.message,
+      message: "Unable to update profile.",
     });
   }
 };
 
+// =====================================================
+// LEGACY HELPER
+// Retained for compatibility with existing imports.
+// Only deletes S3 profile objects. Local legacy files
+// are deliberately left untouched.
+// =====================================================
 
-// =========================================================
-// DELETE OLD PROFILE IMAGE
-// Optional helper
-// =========================================================
+const deleteOldProfileImage = async (profileImage) => {
+  const key = getProfileS3Key(profileImage);
 
-const deleteOldProfileImage = (imagePath) => {
+  if (!key) return;
+
   try {
-    if (!imagePath) {
-      return;
-    }
-
-    // Only delete our uploaded profile images
-    if (
-      !imagePath.startsWith(
-        "/uploads/profile/"
-      )
-    ) {
-      return;
-    }
-
-    const filename =
-      path.basename(imagePath);
-
-    const filePath = path.join(
-      __dirname,
-      "..",
-      "uploads",
-      "profile",
-      filename
-    );
-
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
+    await deleteS3Object(key);
   } catch (error) {
-    console.error(
-      "DELETE OLD PROFILE IMAGE ERROR:",
-      error.message
-    );
+    console.error("Delete old profile image error:", error);
   }
 };
 
-
-// =========================================================
+// =====================================================
 // EXPORTS
-// =========================================================
+// =====================================================
 
 module.exports = {
   getProfile,

@@ -22,7 +22,7 @@ const getAudioSha256 = (audioFile) => {
 
 const {
   uploadToS3,
-} = require("../middleware/uploadMiddleware");
+} = require("../middleware/s3Upload");
 
 /* =========================================================
    AWS S3 CONFIGURATION
@@ -169,16 +169,19 @@ const parseSongMoods = (value, fallback = []) => {
 const getS3Url = (result) => {
   if (!result) return null;
 
-  // Your uploadMiddleware returns { key, filename, bucket }.
-  if (result.key) {
-    const bucket = result.bucket || BUCKET_NAME;
+  if (result.cloudFrontUrl) {
+    return result.cloudFrontUrl;
+  }
 
-    return `https://${bucket}.s3.${AWS_REGION}.amazonaws.com/${String(
+  if (result.key) {
+    return (
+      process.env.CLOUDFRONT_URL?.replace(/\/+$/, "") +
+      "/" +
       result.key
-    )
-      .split("/")
-      .map((part) => encodeURIComponent(part))
-      .join("/")}`;
+        .split("/")
+        .map(encodeURIComponent)
+        .join("/")
+    );
   }
 
   return (

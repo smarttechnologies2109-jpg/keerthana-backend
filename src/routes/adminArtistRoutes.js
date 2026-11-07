@@ -13,7 +13,7 @@ const {
 } = require("../middleware/authMiddleware");
 
 // IMPORTANT: your file is uploadMiddleware.js
-const upload = require("../middleware/uploadMiddleware");
+const upload = require("../middleware/s3Upload");
 
 const router = express.Router();
 

@@ -17,7 +17,7 @@ const {
   adminOnly,
 } = require("../middleware/authMiddleware");
 
-const upload = require("../middleware/uploadMiddleware");
+const upload = require("../middleware/s3Upload");
 
 const router = express.Router();
 
