@@ -55,7 +55,16 @@ async function cashfreeRequest(path, options = {}) {
       "Cashfree credentials are not configured."
     );
   }
-
+console.log("CASHFREE_RUNTIME_CHECK", {
+  environment: CASHFREE_ENV,
+  baseUrl: CASHFREE_BASE_URL,
+  appIdPresent: Boolean(CASHFREE_CLIENT_ID),
+  appIdPrefix: CASHFREE_CLIENT_ID?.slice(0, 4),
+  appIdLength: CASHFREE_CLIENT_ID?.length,
+  secretPresent: Boolean(CASHFREE_CLIENT_SECRET),
+  secretLength: CASHFREE_CLIENT_SECRET?.length,
+  apiVersion: CASHFREE_API_VERSION,
+});
   const response = await fetch(
     `${CASHFREE_BASE_URL}${path}`,
     {
