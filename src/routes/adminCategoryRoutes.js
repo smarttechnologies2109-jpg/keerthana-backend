@@ -1,33 +1,23 @@
-const express =
-  require("express");
 
+const express = require("express");
 
 const {
   getCategories,
   createCategory,
   updateCategory,
   deleteCategory,
-} = require(
-  "../controllers/adminCategoryController"
-);
-
+} = require("../controllers/adminCategoryController");
 
 const {
   authMiddleware,
   adminOnly,
-} = require(
-  "../middleware/authMiddleware"
-);
+} = require("../middleware/authMiddleware");
 
+const upload = require("../middleware/s3Upload");
 
-const router =
-  express.Router();
+const router = express.Router();
 
-
-/* =========================================================
-   GET CATEGORIES
-========================================================= */
-
+// GET CATEGORIES
 router.get(
   "/",
   authMiddleware,
@@ -35,35 +25,25 @@ router.get(
   getCategories
 );
 
-
-/* =========================================================
-   CREATE CATEGORY
-========================================================= */
-
+// CREATE CATEGORY WITH IMAGE
 router.post(
   "/",
   authMiddleware,
   adminOnly,
+  upload.single("image"),
   createCategory
 );
 
-
-/* =========================================================
-   UPDATE CATEGORY
-========================================================= */
-
+// UPDATE CATEGORY WITH IMAGE
 router.put(
   "/:id",
   authMiddleware,
   adminOnly,
+  upload.single("image"),
   updateCategory
 );
 
-
-/* =========================================================
-   DELETE CATEGORY
-========================================================= */
-
+// DELETE CATEGORY
 router.delete(
   "/:id",
   authMiddleware,
@@ -71,6 +51,4 @@ router.delete(
   deleteCategory
 );
 
-
-module.exports =
-  router;
+module.exports = router;

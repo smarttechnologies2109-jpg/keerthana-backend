@@ -1,3 +1,4 @@
+
 const express = require("express");
 
 const {
@@ -8,90 +9,43 @@ const {
 
 const {
   authMiddleware,
+  adminOnly,
 } = require("../middleware/authMiddleware");
 
+const upload = require("../middleware/s3Upload");
 
 const router = express.Router();
 
-
-/* ========================================
-   ADMIN ROLE CHECK
-======================================== */
-
-const adminOnly = (req, res, next) => {
-
-  if (!req.user) {
-
-    return res.status(401).json({
-      success: false,
-      message: "Authentication required.",
-    });
-
-  }
-
-
-  const role =
-    String(req.user.role || "")
-      .trim()
-      .toUpperCase();
-
-
-  console.log(
-    "Admin ministry request role:",
-    role
-  );
-
-
-  if (role !== "ADMIN") {
-
-    console.log(
-      "Admin ministry access denied:",
-      req.user
-    );
-
-    return res.status(403).json({
-      success: false,
-      message: "Admin access required.",
-    });
-
-  }
-
-
-  next();
-
-};
-
-
-/* ========================================
-   CREATE MINISTRY
-   POST /api/admin/ministries
-======================================== */
+// ========================================
+// CREATE MINISTRY
+// POST /api/admin/ministries
+// ========================================
 
 router.post(
   "/",
   authMiddleware,
   adminOnly,
+  upload.single("image"),
   createMinistry
 );
 
-
-/* ========================================
-   UPDATE MINISTRY
-   PUT /api/admin/ministries/:id
-======================================== */
+// ========================================
+// UPDATE MINISTRY
+// PUT /api/admin/ministries/:id
+// ========================================
 
 router.put(
   "/:id",
   authMiddleware,
   adminOnly,
+  upload.single("image"),
   updateMinistry
 );
 
-
-/* ========================================
-   DELETE MINISTRY
-   DELETE /api/admin/ministries/:id
-======================================== */
+// ========================================
+// DELETE MINISTRY
+// DELETE /api/admin/ministries/:id
+// ========================================
 
 router.delete(
   "/:id",
@@ -99,6 +53,5 @@ router.delete(
   adminOnly,
   deleteMinistry
 );
-
 
 module.exports = router;

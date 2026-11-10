@@ -25,7 +25,9 @@ const CLOUDFRONT_URL = (
   "https://d1aj7yf1pvtrkq.cloudfront.net"
 ).replace(/\/+$/, "");
 
-const s3 = new S3Client({ region: REGION });
+const s3 = new S3Client({
+  region: REGION,
+});
 
 // =====================================================
 // MULTER MEMORY STORAGE
@@ -38,6 +40,7 @@ const storage = multer.memoryStorage();
 // =====================================================
 
 const allowedTypes = {
+  // Song audio
   audio: {
     mime: [
       "audio/mpeg",
@@ -48,6 +51,7 @@ const allowedTypes = {
     extensions: [".mp3", ".m4a", ".mp4"],
   },
 
+  // Song cover images
   cover: {
     mime: [
       "image/jpeg",
@@ -58,6 +62,17 @@ const allowedTypes = {
     extensions: [".jpg", ".jpeg", ".png", ".webp", ".gif"],
   },
 
+  // Artist, category and ministry images
+  image: {
+    mime: [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+    ],
+    extensions: [".jpg", ".jpeg", ".png", ".webp"],
+  },
+
+  // User profile images
   profile_image: {
     mime: [
       "image/jpeg",
@@ -67,6 +82,10 @@ const allowedTypes = {
     extensions: [".jpg", ".jpeg", ".png", ".webp"],
   },
 };
+
+// =====================================================
+// FILE FILTER
+// =====================================================
 
 const fileFilter = (req, file, cb) => {
   const rules = allowedTypes[file.fieldname];
@@ -94,7 +113,9 @@ const fileFilter = (req, file, cb) => {
 };
 
 // =====================================================
-// GENERAL UPLOAD: SONG AUDIO AND COVER
+// GENERAL UPLOAD
+// Audio, covers, artist, category and ministry images
+// Maximum file size: 30 MB
 // =====================================================
 
 const upload = multer({
@@ -102,11 +123,13 @@ const upload = multer({
   fileFilter,
   limits: {
     fileSize: 30 * 1024 * 1024,
+    files: 5,
   },
 });
 
 // =====================================================
-// PROFILE IMAGE UPLOAD: MAXIMUM 5 MB
+// PROFILE IMAGE UPLOAD
+// Maximum file size: 5 MB
 // =====================================================
 
 const profileUpload = multer({
@@ -127,6 +150,7 @@ const getContentType = (extension, fallback) => {
     ".mp3": "audio/mpeg",
     ".m4a": "audio/mp4",
     ".mp4": "audio/mp4",
+
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".png": "image/png",
@@ -152,7 +176,8 @@ const makeCloudFrontUrl = (key) => {
 
 // =====================================================
 // UPLOAD FILE TO S3
-// Allowed folders: audio, covers, profiles
+// Allowed folders:
+// audio, covers, profiles, artists, categories, ministries
 // =====================================================
 
 const uploadToS3 = async (file, folder) => {
@@ -160,7 +185,14 @@ const uploadToS3 = async (file, folder) => {
     return null;
   }
 
-  const allowedFolders = ["audio", "covers", "profiles"];
+  const allowedFolders = [
+    "audio",
+    "covers",
+    "profiles",
+    "artists",
+    "categories",
+    "ministries",
+  ];
 
   if (!allowedFolders.includes(folder)) {
     throw new Error("Invalid S3 upload folder.");
@@ -187,6 +219,7 @@ const uploadToS3 = async (file, folder) => {
       .toLowerCase() || "file";
 
   const filename = `${Date.now()}-${cleanName}${extension}`;
+
   const key = `${folder}/${filename}`;
 
   const contentType = getContentType(
@@ -201,7 +234,9 @@ const uploadToS3 = async (file, folder) => {
       Body: file.buffer,
       ContentLength: file.size,
       ContentType: contentType,
-      // Keep the S3 bucket private. Do not add ACL: public-read.
+
+      // Keep the S3 bucket private.
+      // Do not add ACL: public-read.
     })
   );
 
@@ -228,7 +263,15 @@ const getProfileS3Key = (value) => {
 
   try {
     if (/^https?:\/\//i.test(key)) {
-      key = new URL(key).pathname;
+      const url = new URL(key);
+
+      if (
+        url.hostname !== new URL(CLOUDFRONT_URL).hostname
+      ) {
+        return null;
+      }
+
+      key = url.pathname;
     }
   } catch {
     return null;
@@ -247,11 +290,80 @@ const getProfileS3Key = (value) => {
 
 // =====================================================
 // DELETE PROFILE S3 IMAGE
-// Legacy /uploads images are not deleted here.
+// Only accepts profiles/ objects.
 // =====================================================
 
 const deleteS3Object = async (value) => {
   const key = getProfileS3Key(value);
+
+  if (!key) {
+    return;
+  }
+
+  await s3.send(
+    new DeleteObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: key,
+    })
+  );
+};
+
+// =====================================================
+// EXTRACT MANAGED IMAGE S3 KEY
+// Only accepts:
+// artists/
+// categories/
+// ministries/
+// =====================================================
+
+const getManagedS3Key = (value) => {
+  if (!value || typeof value !== "string") {
+    return null;
+  }
+
+  let key = value.trim();
+
+  try {
+    if (/^https?:\/\//i.test(key)) {
+      const url = new URL(key);
+
+      if (
+        url.hostname !== new URL(CLOUDFRONT_URL).hostname
+      ) {
+        return null;
+      }
+
+      key = url.pathname;
+    }
+  } catch {
+    return null;
+  }
+
+  key = key.replace(/^\/+/, "");
+
+  try {
+    key = decodeURIComponent(key);
+  } catch {
+    return null;
+  }
+
+  const allowedPrefixes = [
+    "artists/",
+    "categories/",
+    "ministries/",
+  ];
+
+  return allowedPrefixes.some((prefix) => key.startsWith(prefix))
+    ? key
+    : null;
+};
+
+// =====================================================
+// DELETE ARTIST / CATEGORY / MINISTRY IMAGE
+// =====================================================
+
+const deleteManagedS3Object = async (value) => {
+  const key = getManagedS3Key(value);
 
   if (!key) {
     return;
@@ -280,7 +392,9 @@ const getSignedAudioUrl = async (key, expiresIn = 3600) => {
       Bucket: BUCKET_NAME,
       Key: key,
     }),
-    { expiresIn }
+    {
+      expiresIn,
+    }
   );
 };
 
@@ -291,8 +405,17 @@ const getSignedAudioUrl = async (key, expiresIn = 3600) => {
 module.exports = upload;
 
 module.exports.uploadToS3 = uploadToS3;
+
 module.exports.profileUpload = profileUpload;
+
 module.exports.deleteS3Object = deleteS3Object;
+
+module.exports.deleteManagedS3Object = deleteManagedS3Object;
+
 module.exports.getSignedAudioUrl = getSignedAudioUrl;
+
 module.exports.getProfileS3Key = getProfileS3Key;
+
+module.exports.getManagedS3Key = getManagedS3Key;
+
 module.exports.CLOUDFRONT_URL = CLOUDFRONT_URL;

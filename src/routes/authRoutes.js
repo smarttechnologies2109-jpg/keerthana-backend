@@ -1,3 +1,4 @@
+
 const express = require("express");
 
 const {
@@ -5,16 +6,13 @@ const {
   login,
   refreshSession,
   adminLogin,
-
   ownerLogin,
   ownerForgotPassword,
   ownerVerifyOTP,
   ownerResetPassword,
-
   adminForgotPassword,
   adminVerifyOTP,
   adminResetPassword,
-
   getMe,
 } = require("../controllers/authController");
 
@@ -24,42 +22,25 @@ const {
 
 const router = express.Router();
 
-
 /* =========================================================
-   USER AUTHENTICATION
+   NORMAL USER AUTHENTICATION
 ========================================================= */
 
-router.post(
-  "/register",
-  register
-);
+router.post("/register", register);
 
-router.post(
-  "/login",
-  login
-);
+router.post("/login", login);
 
 /* =========================================================
-   REFRESH AUTHENTICATION SESSION
+   REFRESH ACCESS TOKEN
 ========================================================= */
 
-router.post(
-  "/refresh",
-  refreshSession
-);
+router.post("/refresh", refreshSession);
+
 /* =========================================================
    ADMIN AUTHENTICATION
 ========================================================= */
 
-router.post(
-  "/admin/login",
-  adminLogin
-);
-
-
-/* =========================================================
-   ADMIN FORGOT PASSWORD
-========================================================= */
+router.post("/admin/login", adminLogin);
 
 router.post(
   "/admin/forgot-password",
@@ -76,20 +57,11 @@ router.post(
   adminResetPassword
 );
 
-
 /* =========================================================
    BUSINESS OWNER AUTHENTICATION
 ========================================================= */
 
-router.post(
-  "/owner/login",
-  ownerLogin
-);
-
-
-/* =========================================================
-   BUSINESS OWNER FORGOT PASSWORD
-========================================================= */
+router.post("/owner/login", ownerLogin);
 
 router.post(
   "/owner/forgot-password",
@@ -106,9 +78,8 @@ router.post(
   ownerResetPassword
 );
 
-
 /* =========================================================
-   CURRENT USER
+   CURRENT AUTHENTICATED USER
 ========================================================= */
 
 router.get(
@@ -116,6 +87,5 @@ router.get(
   authMiddleware,
   getMe
 );
-
 
 module.exports = router;
