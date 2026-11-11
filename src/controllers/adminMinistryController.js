@@ -24,19 +24,23 @@ const ALLOWED_LANGUAGES = [
 // POST /api/admin/ministries
 // =====================================================
 
+
 const createMinistry = async (req, res) => {
   let uploadedImage = null;
+  let currentStep = "Starting ministry creation";
 
   try {
     const {
-      name,
-      description,
-      language,
-    } = req.body;
+  name,
+  description,
+  language,
+} = req.body || {};
 
     // NAME VALIDATION
 
-    if (!name || !name.trim()) {
+    currentStep = "Validating ministry name";
+
+    if (typeof name !== "string" || !name.trim()) {
       return res.status(400).json({
         success: false,
         message: "Ministry name is required.",
@@ -44,14 +48,12 @@ const createMinistry = async (req, res) => {
     }
 
     const ministryName = name.trim();
-
-    const ministryDescription =
-      description?.trim() || null;
-
-    const ministryLanguage =
-      language?.trim() || "Telugu";
+    const ministryDescription = description?.trim() || null;
+    const ministryLanguage = language?.trim() || "Telugu";
 
     // LANGUAGE VALIDATION
+
+    currentStep = "Validating ministry language";
 
     if (!ALLOWED_LANGUAGES.includes(ministryLanguage)) {
       return res.status(400).json({
@@ -61,6 +63,8 @@ const createMinistry = async (req, res) => {
     }
 
     // CHECK DUPLICATE
+
+    currentStep = "Checking duplicate ministry";
 
     const existing = await pool.query(
       `SELECT id
@@ -81,6 +85,8 @@ const createMinistry = async (req, res) => {
     // UPLOAD IMAGE TO S3
 
     if (req.file) {
+      currentStep = "Uploading ministry image to S3";
+
       uploadedImage = await uploadToS3(
         req.file,
         "ministries"
@@ -88,6 +94,8 @@ const createMinistry = async (req, res) => {
     }
 
     // SAVE TO POSTGRESQL
+
+    currentStep = "Inserting ministry into PostgreSQL";
 
     const result = await pool.query(
       `INSERT INTO ministries
@@ -120,19 +128,22 @@ const createMinistry = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Create ministry error:", error);
+    console.error("==================================");
+    console.error("CREATE MINISTRY FAILED");
+    console.error("Failed step:", currentStep);
+    console.error("Error message:", error.message);
+    console.error("Error code:", error.code);
+    console.error("==================================");
 
-    // REMOVE NEW S3 IMAGE IF DATABASE INSERT FAILS
+    // CLEAN UP NEW S3 IMAGE IF DATABASE INSERT FAILS
 
     if (uploadedImage?.key) {
       try {
-        await deleteManagedS3Object(
-          uploadedImage.key
-        );
+        await deleteManagedS3Object(uploadedImage.key);
       } catch (cleanupError) {
         console.error(
           "Ministry image cleanup error:",
-          cleanupError
+          cleanupError.message
         );
       }
     }
@@ -141,9 +152,11 @@ const createMinistry = async (req, res) => {
       success: false,
       message: "Failed to create ministry.",
       error: error.message,
+      failedStep: currentStep,
     });
   }
 };
+
 
 // =====================================================
 // UPDATE MINISTRY
@@ -156,11 +169,11 @@ const updateMinistry = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const {
-      name,
-      description,
-      language,
-    } = req.body;
+   const {
+  name,
+  description,
+  language,
+} = req.body || {};
 
     // NAME VALIDATION
 
