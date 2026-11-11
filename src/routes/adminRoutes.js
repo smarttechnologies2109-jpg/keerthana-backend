@@ -1,37 +1,61 @@
-const express =
-  require("express");
+
+const express = require("express");
+
+const {
+  getArtists,
+  createArtist,
+  updateArtist,
+  deleteArtist,
+} = require("../controllers/adminArtistController");
+
+const {
+  getAlbums,
+  createAlbum,
+  updateAlbum,
+  deleteAlbum,
+} = require("../controllers/adminAlbumController");
 
 const {
   authMiddleware,
+  adminOnly,
 } = require("../middleware/authMiddleware");
 
-const adminMiddleware =
-  require(
-    "../middleware/adminMiddleware"
-  );
+const upload = require("../middleware/s3Upload");
 
-const {
-  getDashboard,
-} = require(
-  "../controllers/adminController"
-);
+const router = express.Router();
 
-
-const router =
-  express.Router();
-
-
-/* =========================================
-   ADMIN DASHBOARD
-========================================= */
-
-router.get(
-  "/dashboard",
+router.get("/artists", authMiddleware, adminOnly, getArtists);
+router.post(
+  "/artists",
   authMiddleware,
-  adminMiddleware,
-  getDashboard
+  adminOnly,
+  upload.single("cover"),
+  createArtist
 );
+router.put(
+  "/artists/:id",
+  authMiddleware,
+  adminOnly,
+  upload.single("cover"),
+  updateArtist
+);
+router.delete("/artists/:id", authMiddleware, adminOnly, deleteArtist);
 
+router.get("/albums", authMiddleware, adminOnly, getAlbums);
+router.post(
+  "/albums",
+  authMiddleware,
+  adminOnly,
+  upload.single("cover"),
+  createAlbum
+);
+router.put(
+  "/albums/:id",
+  authMiddleware,
+  adminOnly,
+  upload.single("cover"),
+  updateAlbum
+);
+router.delete("/albums/:id", authMiddleware, adminOnly, deleteAlbum);
 
-module.exports =
-  router;
+module.exports = router;

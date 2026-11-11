@@ -347,11 +347,14 @@ const getManagedS3Key = (value) => {
     return null;
   }
 
-  const allowedPrefixes = [
-    "artists/",
-    "categories/",
-    "ministries/",
-  ];
+ 
+const allowedPrefixes = [
+  "artists/",
+  "covers/",
+  "categories/",
+  "ministries/",
+];
+
 
   return allowedPrefixes.some((prefix) => key.startsWith(prefix))
     ? key

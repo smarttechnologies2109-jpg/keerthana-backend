@@ -1,9 +1,10 @@
 
 const pool = require("../config/db");
 
-/* =========================================================
-   SUPPORTED LANGUAGES
-========================================================= */
+const {
+  uploadToS3,
+  deleteManagedS3Object,
+} = require("../middleware/s3Upload");
 
 const ALLOWED_LANGUAGES = [
   "Telugu",
@@ -14,18 +15,10 @@ const ALLOWED_LANGUAGES = [
   "Tamil",
 ];
 
-/* =========================================================
-   VALIDATE ARTIST ID
-========================================================= */
+const isValidId = (id) =>
+  /^\d+$/.test(String(id || "")) && Number(id) > 0;
 
-const isValidId = (id) => {
-  return /^\d+$/.test(String(id || "")) &&
-    Number(id) > 0;
-};
-
-/* =========================================================
-   GET ALL ARTISTS
-========================================================= */
+const normalize = (value) => String(value || "").trim();
 
 const getArtists = async (req, res) => {
   try {
@@ -33,41 +26,19 @@ const getArtists = async (req, res) => {
       SELECT
         a.id,
         a.name,
-
-        COALESCE(
-          NULLIF(a.name_english, ''),
-          a.name
-        ) AS name_english,
-
-        COALESCE(
-          NULLIF(a.name_telugu, ''),
-          a.name
-        ) AS name_telugu,
-
+        COALESCE(NULLIF(a.name_english, ''), a.name) AS name_english,
+        COALESCE(NULLIF(a.name_telugu, ''), a.name) AS name_telugu,
         a.bio,
         a.image_url,
         a.language,
         a.created_at,
-
         COUNT(DISTINCT s.id)::integer AS song_count
-
       FROM public.artists a
-
-      LEFT JOIN public.songs s
-        ON s.artist_id = a.id
-
+      LEFT JOIN public.songs s ON s.artist_id = a.id
       GROUP BY
-        a.id,
-        a.name,
-        a.name_english,
-        a.name_telugu,
-        a.bio,
-        a.image_url,
-        a.language,
-        a.created_at
-
-      ORDER BY
-        a.name ASC
+        a.id, a.name, a.name_english, a.name_telugu,
+        a.bio, a.image_url, a.language, a.created_at
+      ORDER BY a.name ASC
     `);
 
     return res.status(200).json({
@@ -75,10 +46,8 @@ const getArtists = async (req, res) => {
       count: result.rows.length,
       artists: result.rows,
     });
-
   } catch (error) {
     console.error("Admin get artists error:", error);
-
     return res.status(500).json({
       success: false,
       message: "Unable to load artists.",
@@ -86,11 +55,9 @@ const getArtists = async (req, res) => {
   }
 };
 
-/* =========================================================
-   CREATE ARTIST
-========================================================= */
-
 const createArtist = async (req, res) => {
+  let uploadedImage = null;
+
   try {
     const {
       name,
@@ -100,39 +67,16 @@ const createArtist = async (req, res) => {
       language,
     } = req.body;
 
-    /* -----------------------------------------------------
-       NORMALIZE NAMES
+    const englishName = normalize(name_english || name);
+    const teluguName = normalize(name_telugu || name);
+    const artistLanguage = normalize(language || "Telugu");
 
-       Backward compatibility:
-       Old clients sending only "name" still work.
-    ----------------------------------------------------- */
-
-    const englishName =
-      String(name_english || name || "").trim();
-
-    const teluguName =
-      String(name_telugu || name || "").trim();
-
-    if (!englishName) {
+    if (!englishName || !teluguName) {
       return res.status(400).json({
         success: false,
-        message: "English artist name is required.",
+        message: "English and Telugu artist names are required.",
       });
     }
-
-    if (!teluguName) {
-      return res.status(400).json({
-        success: false,
-        message: "Telugu artist name is required.",
-      });
-    }
-
-    /* -----------------------------------------------------
-       LANGUAGE
-    ----------------------------------------------------- */
-
-    const artistLanguage =
-      String(language || "Telugu").trim();
 
     if (!ALLOWED_LANGUAGES.includes(artistLanguage)) {
       return res.status(400).json({
@@ -141,55 +85,36 @@ const createArtist = async (req, res) => {
       });
     }
 
-    /* -----------------------------------------------------
-       CHECK DUPLICATE ARTIST
-
-       Check both names against existing records.
-    ----------------------------------------------------- */
-
-    const duplicateResult = await pool.query(
+    const duplicate = await pool.query(
       `
       SELECT id
       FROM public.artists
       WHERE
-        LOWER(TRIM(COALESCE(NULLIF(name_english, ''), name)))
-          = LOWER($1)
-
+        LOWER(TRIM(COALESCE(NULLIF(name_english, ''), name))) = LOWER($1)
         OR
-
-        LOWER(TRIM(COALESCE(NULLIF(name_telugu, ''), name)))
-          = LOWER($2)
-
+        LOWER(TRIM(COALESCE(NULLIF(name_telugu, ''), name))) = LOWER($2)
       LIMIT 1
       `,
       [englishName, teluguName]
     );
 
-    if (duplicateResult.rows.length > 0) {
+    if (duplicate.rows.length) {
       return res.status(409).json({
         success: false,
         message: "An artist with the same English or Telugu name already exists.",
       });
     }
 
-    /* -----------------------------------------------------
-       IMAGE
+    let imageUrl = null;
 
-       Preserve existing image upload behavior.
-    ----------------------------------------------------- */
-
-    const image_url = req.file
-      ? `/images/${req.file.filename}`
-      : null;
-
-    /* -----------------------------------------------------
-       INSERT ARTIST
-    ----------------------------------------------------- */
+    if (req.file) {
+      uploadedImage = await uploadToS3(req.file, "artists");
+      imageUrl = uploadedImage.cloudFrontUrl;
+    }
 
     const result = await pool.query(
       `
-      INSERT INTO public.artists
-      (
+      INSERT INTO public.artists (
         name,
         name_english,
         name_telugu,
@@ -198,22 +123,14 @@ const createArtist = async (req, res) => {
         language
       )
       VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING
-        id,
-        name,
-        name_english,
-        name_telugu,
-        bio,
-        image_url,
-        language,
-        created_at
+      RETURNING *
       `,
       [
         teluguName,
         englishName,
         teluguName,
-        bio?.trim() || null,
-        image_url,
+        normalize(bio) || null,
+        imageUrl,
         artistLanguage,
       ]
     );
@@ -223,9 +140,15 @@ const createArtist = async (req, res) => {
       message: "Artist created successfully.",
       artist: result.rows[0],
     });
-
   } catch (error) {
     console.error("Create artist error:", error);
+
+    if (uploadedImage?.key) {
+      await deleteManagedS3Object(uploadedImage.key).catch(
+        (deleteError) =>
+          console.error("S3 cleanup error:", deleteError)
+      );
+    }
 
     return res.status(500).json({
       success: false,
@@ -234,11 +157,9 @@ const createArtist = async (req, res) => {
   }
 };
 
-/* =========================================================
-   UPDATE ARTIST
-========================================================= */
-
 const updateArtist = async (req, res) => {
+  let uploadedImage = null;
+
   try {
     const { id } = req.params;
 
@@ -249,35 +170,16 @@ const updateArtist = async (req, res) => {
       });
     }
 
-    const {
-      name,
-      name_english,
-      name_telugu,
-      bio,
-      language,
-    } = req.body;
-
-    /* -----------------------------------------------------
-       GET EXISTING ARTIST
-    ----------------------------------------------------- */
-
     const existing = await pool.query(
       `
-      SELECT
-        id,
-        name,
-        name_english,
-        name_telugu,
-        bio,
-        image_url,
-        language
+      SELECT *
       FROM public.artists
       WHERE id = $1
       `,
       [id]
     );
 
-    if (existing.rows.length === 0) {
+    if (!existing.rows.length) {
       return res.status(404).json({
         success: false,
         message: "Artist not found.",
@@ -286,46 +188,30 @@ const updateArtist = async (req, res) => {
 
     const oldArtist = existing.rows[0];
 
-    /* -----------------------------------------------------
-       NORMALIZE NAMES
+    const englishName = normalize(
+      req.body.name_english !== undefined
+        ? req.body.name_english
+        : oldArtist.name_english || req.body.name || oldArtist.name
+    );
 
-       Supports both bilingual and legacy requests.
-    ----------------------------------------------------- */
-
-    const englishName = String(
-      name_english !== undefined
-        ? name_english
-        : oldArtist.name_english || name || oldArtist.name
-    ).trim();
-
-    const teluguName = String(
-      name_telugu !== undefined
-        ? name_telugu
-        : name !== undefined
-          ? name
+    const teluguName = normalize(
+      req.body.name_telugu !== undefined
+        ? req.body.name_telugu
+        : req.body.name !== undefined
+          ? req.body.name
           : oldArtist.name_telugu || oldArtist.name
-    ).trim();
+    );
 
-    if (!englishName) {
+    const artistLanguage = normalize(
+      req.body.language || oldArtist.language || "Telugu"
+    );
+
+    if (!englishName || !teluguName) {
       return res.status(400).json({
         success: false,
-        message: "English artist name is required.",
+        message: "English and Telugu artist names are required.",
       });
     }
-
-    if (!teluguName) {
-      return res.status(400).json({
-        success: false,
-        message: "Telugu artist name is required.",
-      });
-    }
-
-    /* -----------------------------------------------------
-       LANGUAGE
-    ----------------------------------------------------- */
-
-    const artistLanguage =
-      String(language || oldArtist.language || "Telugu").trim();
 
     if (!ALLOWED_LANGUAGES.includes(artistLanguage)) {
       return res.status(400).json({
@@ -334,58 +220,39 @@ const updateArtist = async (req, res) => {
       });
     }
 
-    /* -----------------------------------------------------
-       CHECK DUPLICATE ARTIST
-    ----------------------------------------------------- */
-
-    const duplicateResult = await pool.query(
+    const duplicate = await pool.query(
       `
       SELECT id
       FROM public.artists
       WHERE id <> $3
       AND (
-        LOWER(TRIM(COALESCE(NULLIF(name_english, ''), name)))
-          = LOWER($1)
-
+        LOWER(TRIM(COALESCE(NULLIF(name_english, ''), name))) = LOWER($1)
         OR
-
-        LOWER(TRIM(COALESCE(NULLIF(name_telugu, ''), name)))
-          = LOWER($2)
+        LOWER(TRIM(COALESCE(NULLIF(name_telugu, ''), name))) = LOWER($2)
       )
       LIMIT 1
       `,
       [englishName, teluguName, id]
     );
 
-    if (duplicateResult.rows.length > 0) {
+    if (duplicate.rows.length) {
       return res.status(409).json({
         success: false,
         message: "Another artist with the same English or Telugu name already exists.",
       });
     }
 
-    /* -----------------------------------------------------
-       IMAGE
+    let imageUrl = oldArtist.image_url;
 
-       Keep the existing image when no new file is uploaded.
-    ----------------------------------------------------- */
-
-    const image_url = req.file
-      ? `/images/${req.file.filename}`
-      : oldArtist.image_url;
-
-    /* -----------------------------------------------------
-       BIO
-    ----------------------------------------------------- */
+    if (req.file) {
+      uploadedImage = await uploadToS3(req.file, "artists");
+      imageUrl = uploadedImage.cloudFrontUrl;
+    }
 
     const artistBio =
-      bio !== undefined
-        ? bio.trim() || null
+      req.body.bio !== undefined
+        ? normalize(req.body.bio) || null
         : oldArtist.bio;
-
-    /* -----------------------------------------------------
-       UPDATE
-    ----------------------------------------------------- */
 
     const result = await pool.query(
       `
@@ -397,38 +264,45 @@ const updateArtist = async (req, res) => {
         bio = $4,
         image_url = $5,
         language = $6
-
       WHERE id = $7
-
-      RETURNING
-        id,
-        name,
-        name_english,
-        name_telugu,
-        bio,
-        image_url,
-        language,
-        created_at
+      RETURNING *
       `,
       [
         teluguName,
         englishName,
         teluguName,
         artistBio,
-        image_url,
+        imageUrl,
         artistLanguage,
         id,
       ]
     );
+
+    // Delete old image only after the database update succeeds.
+    if (
+      uploadedImage &&
+      oldArtist.image_url &&
+      oldArtist.image_url !== imageUrl
+    ) {
+      await deleteManagedS3Object(oldArtist.image_url).catch(
+        (error) => console.error("Old artist image cleanup error:", error)
+      );
+    }
 
     return res.status(200).json({
       success: true,
       message: "Artist updated successfully.",
       artist: result.rows[0],
     });
-
   } catch (error) {
     console.error("Update artist error:", error);
+
+    if (uploadedImage?.key) {
+      await deleteManagedS3Object(uploadedImage.key).catch(
+        (deleteError) =>
+          console.error("New artist image cleanup error:", deleteError)
+      );
+    }
 
     return res.status(500).json({
       success: false,
@@ -436,10 +310,6 @@ const updateArtist = async (req, res) => {
     });
   }
 };
-
-/* =========================================================
-   DELETE ARTIST
-========================================================= */
 
 const deleteArtist = async (req, res) => {
   try {
@@ -452,29 +322,21 @@ const deleteArtist = async (req, res) => {
       });
     }
 
-    /* -----------------------------------------------------
-       CHECK ARTIST EXISTS
-    ----------------------------------------------------- */
-
     const existing = await pool.query(
       `
-      SELECT id
+      SELECT id, image_url
       FROM public.artists
       WHERE id = $1
       `,
       [id]
     );
 
-    if (existing.rows.length === 0) {
+    if (!existing.rows.length) {
       return res.status(404).json({
         success: false,
         message: "Artist not found.",
       });
     }
-
-    /* -----------------------------------------------------
-       CHECK ASSIGNED SONGS
-    ----------------------------------------------------- */
 
     const songResult = await pool.query(
       `
@@ -488,41 +350,33 @@ const deleteArtist = async (req, res) => {
     if (songResult.rows[0].count > 0) {
       return res.status(409).json({
         success: false,
-        message:
-          "Cannot delete this artist because songs are assigned to this artist.",
+        message: "Cannot delete this artist because songs are assigned to this artist.",
       });
     }
 
-    /* -----------------------------------------------------
-       DELETE
-    ----------------------------------------------------- */
-
     await pool.query(
-      `
-      DELETE FROM public.artists
-      WHERE id = $1
-      `,
+      `DELETE FROM public.artists WHERE id = $1`,
       [id]
     );
+
+    if (existing.rows[0].image_url) {
+      await deleteManagedS3Object(existing.rows[0].image_url).catch(
+        (error) => console.error("Artist image cleanup error:", error)
+      );
+    }
 
     return res.status(200).json({
       success: true,
       message: "Artist deleted successfully.",
     });
-
   } catch (error) {
     console.error("Delete artist error:", error);
-
     return res.status(500).json({
       success: false,
       message: "Unable to delete artist.",
     });
   }
 };
-
-/* =========================================================
-   EXPORTS
-========================================================= */
 
 module.exports = {
   getArtists,
