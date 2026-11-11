@@ -1,4 +1,3 @@
-
 const pool = require("../config/db");
 
 /* =========================================================
@@ -19,6 +18,7 @@ const getCategories = async (req, res) => {
         COALESCE(NULLIF(c.name_telugu, ''), c.name)
           AS name_telugu,
 
+        c.image_url,
         c.created_at,
 
         COUNT(s.id)::integer AS song_count
@@ -33,6 +33,7 @@ const getCategories = async (req, res) => {
         c.name,
         c.name_english,
         c.name_telugu,
+        c.image_url,
         c.created_at
 
       ORDER BY c.name ASC
@@ -81,6 +82,7 @@ const getCategoryById = async (req, res) => {
         COALESCE(NULLIF(c.name_telugu, ''), c.name)
           AS name_telugu,
 
+        c.image_url,
         c.created_at,
 
         COUNT(s.id)::integer AS song_count
@@ -97,6 +99,7 @@ const getCategoryById = async (req, res) => {
         c.name,
         c.name_english,
         c.name_telugu,
+        c.image_url,
         c.created_at
       `,
       [id]
