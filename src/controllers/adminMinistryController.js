@@ -7,7 +7,7 @@ const {
 } = require("../middleware/s3Upload");
 
 // =====================================================
-// SUPPORTED LANGUAGES
+// CONFIGURATION
 // =====================================================
 
 const ALLOWED_LANGUAGES = [
@@ -20,104 +20,110 @@ const ALLOWED_LANGUAGES = [
 ];
 
 // =====================================================
+// HELPERS
+// =====================================================
+
+const normalizeString = (value) => {
+  return typeof value === "string" ? value.trim() : "";
+};
+
+const isValidLanguage = (language) => {
+  return ALLOWED_LANGUAGES.includes(language);
+};
+
+const cleanupUploadedImage = async (key) => {
+  if (!key) return;
+
+  try {
+    await deleteManagedS3Object(key);
+  } catch (error) {
+    console.error("S3 uploaded image cleanup failed:", error);
+  }
+};
+
+const deleteOldImage = async (imageUrl) => {
+  if (!imageUrl) return;
+
+  try {
+    await deleteManagedS3Object(imageUrl);
+  } catch (error) {
+    console.error("Old ministry image deletion failed:", error);
+  }
+};
+
+// =====================================================
 // CREATE MINISTRY
 // POST /api/admin/ministries
 // =====================================================
 
-
 const createMinistry = async (req, res) => {
   let uploadedImage = null;
-  let currentStep = "Starting ministry creation";
 
   try {
-    const {
-  name,
-  description,
-  language,
-} = req.body || {};
+    const name = normalizeString(req.body.name);
+    const description = normalizeString(req.body.description);
+    const language =
+      normalizeString(req.body.language) || "Telugu";
 
-    // NAME VALIDATION
-
-    currentStep = "Validating ministry name";
-
-    if (typeof name !== "string" || !name.trim()) {
+    // Validate name
+    if (!name) {
       return res.status(400).json({
         success: false,
         message: "Ministry name is required.",
       });
     }
 
-    const ministryName = name.trim();
-    const ministryDescription = description?.trim() || null;
-    const ministryLanguage = language?.trim() || "Telugu";
-
-    // LANGUAGE VALIDATION
-
-    currentStep = "Validating ministry language";
-
-    if (!ALLOWED_LANGUAGES.includes(ministryLanguage)) {
+    // Validate language
+    if (!isValidLanguage(language)) {
       return res.status(400).json({
         success: false,
         message: "Invalid ministry language.",
       });
     }
 
-    // CHECK DUPLICATE
-
-    currentStep = "Checking duplicate ministry";
-
-    const existing = await pool.query(
-      `SELECT id
-       FROM ministries
-       WHERE LOWER(name) = LOWER($1)
-       AND language = $2`,
-      [ministryName, ministryLanguage]
+    // Check duplicate ministry
+    const duplicate = await pool.query(
+      `
+      SELECT id
+      FROM ministries
+      WHERE LOWER(TRIM(name)) = LOWER($1)
+      AND language = $2
+      LIMIT 1
+      `,
+      [name, language]
     );
 
-    if (existing.rows.length > 0) {
+    if (duplicate.rows.length > 0) {
       return res.status(409).json({
         success: false,
-        message:
-          "A ministry with this name already exists in this language.",
+        message: "This ministry already exists in this language.",
       });
     }
 
-    // UPLOAD IMAGE TO S3
-
+    // Upload image if provided
     if (req.file) {
-      currentStep = "Uploading ministry image to S3";
-
       uploadedImage = await uploadToS3(
         req.file,
         "ministries"
       );
     }
 
-    // SAVE TO POSTGRESQL
+    const imageUrl = uploadedImage?.cloudFrontUrl || null;
 
-    currentStep = "Inserting ministry into PostgreSQL";
-
+    // Insert ministry
     const result = await pool.query(
-      `INSERT INTO ministries
-       (
-         name,
-         description,
-         image_url,
-         language
-       )
-       VALUES ($1, $2, $3, $4)
-       RETURNING
-         id,
-         name,
-         description,
-         image_url,
-         language,
-         created_at`,
+      `
+      INSERT INTO ministries
+        (name, description, image_url, language)
+      VALUES
+        ($1, $2, $3, $4)
+      RETURNING *
+      `,
       [
-        ministryName,
-        ministryDescription,
-        uploadedImage?.cloudFrontUrl || null,
-        ministryLanguage,
+        name,
+        description || null,
+        imageUrl,
+        language,
       ]
     );
 
@@ -128,35 +134,23 @@ const createMinistry = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("==================================");
-    console.error("CREATE MINISTRY FAILED");
-    console.error("Failed step:", currentStep);
-    console.error("Error message:", error.message);
-    console.error("Error code:", error.code);
-    console.error("==================================");
+    console.error("Create ministry error:", error);
 
-    // CLEAN UP NEW S3 IMAGE IF DATABASE INSERT FAILS
+    await cleanupUploadedImage(uploadedImage?.key);
 
-    if (uploadedImage?.key) {
-      try {
-        await deleteManagedS3Object(uploadedImage.key);
-      } catch (cleanupError) {
-        console.error(
-          "Ministry image cleanup error:",
-          cleanupError.message
-        );
-      }
+    if (error.code === "23505") {
+      return res.status(409).json({
+        success: false,
+        message: "This ministry already exists.",
+      });
     }
 
     return res.status(500).json({
       success: false,
-      message: "Failed to create ministry.",
-      error: error.message,
-      failedStep: currentStep,
+      message: "Unable to create ministry. Please try again.",
     });
   }
 };
-
 
 // =====================================================
 // UPDATE MINISTRY
@@ -169,136 +163,123 @@ const updateMinistry = async (req, res) => {
   try {
     const { id } = req.params;
 
-   const {
-  name,
-  description,
-  language,
-} = req.body || {};
-
-    // NAME VALIDATION
-
-    if (!name || !name.trim()) {
+    if (!id || !/^\d+$/.test(id)) {
       return res.status(400).json({
         success: false,
-        message: "Ministry name is required.",
+        message: "Invalid ministry ID.",
       });
     }
 
-    const ministryName = name.trim();
-
-    const ministryDescription =
-      description?.trim() || null;
-
-    const ministryLanguage =
-      language?.trim() || "Telugu";
-
-    // LANGUAGE VALIDATION
-
-    if (!ALLOWED_LANGUAGES.includes(ministryLanguage)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid ministry language.",
-      });
-    }
-
-    // GET EXISTING MINISTRY
-
-    const ministryResult = await pool.query(
-      `SELECT *
-       FROM ministries
-       WHERE id = $1`,
+    // Find existing ministry
+    const existingResult = await pool.query(
+      `
+      SELECT *
+      FROM ministries
+      WHERE id = $1
+      LIMIT 1
+      `,
       [id]
     );
 
-    if (ministryResult.rows.length === 0) {
+    if (existingResult.rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: "Ministry not found.",
       });
     }
 
-    const oldMinistry = ministryResult.rows[0];
+    const oldMinistry = existingResult.rows[0];
 
-    // CHECK DUPLICATE
+    // Support partial updates
+    const name =
+      req.body.name !== undefined
+        ? normalizeString(req.body.name)
+        : oldMinistry.name;
 
-    const duplicateResult = await pool.query(
-      `SELECT id
-       FROM ministries
-       WHERE LOWER(name) = LOWER($1)
-       AND language = $2
-       AND id <> $3`,
-      [
-        ministryName,
-        ministryLanguage,
-        id,
-      ]
-    );
+    const description =
+      req.body.description !== undefined
+        ? normalizeString(req.body.description)
+        : oldMinistry.description || "";
 
-    if (duplicateResult.rows.length > 0) {
-      return res.status(409).json({
+    const language =
+      req.body.language !== undefined
+        ? normalizeString(req.body.language)
+        : oldMinistry.language || "Telugu";
+
+    if (!name) {
+      return res.status(400).json({
         success: false,
-        message:
-          "Another ministry with this name already exists in this language.",
+        message: "Ministry name is required.",
       });
     }
 
-    // UPLOAD NEW IMAGE IF SELECTED
+    if (!isValidLanguage(language)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ministry language.",
+      });
+    }
+
+    // Check duplicate ministry excluding current ID
+    const duplicate = await pool.query(
+      `
+      SELECT id
+      FROM ministries
+      WHERE LOWER(TRIM(name)) = LOWER($1)
+      AND language = $2
+      AND id <> $3
+      LIMIT 1
+      `,
+      [name, language, id]
+    );
+
+    if (duplicate.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: "Another ministry already has this name in this language.",
+      });
+    }
+
+    // Keep existing image unless a new image is uploaded
+    let imageUrl = oldMinistry.image_url || null;
 
     if (req.file) {
       uploadedImage = await uploadToS3(
         req.file,
         "ministries"
       );
+
+      imageUrl = uploadedImage.cloudFrontUrl;
     }
 
-    // KEEP OLD IMAGE IF NO NEW IMAGE
-
-    const finalImageUrl = uploadedImage
-      ? uploadedImage.cloudFrontUrl
-      : oldMinistry.image_url || null;
-
-    // UPDATE DATABASE
-
+    // Update database
     const result = await pool.query(
-      `UPDATE ministries
-       SET
-         name = $1,
-         description = $2,
-         image_url = $3,
-         language = $4
-       WHERE id = $5
-       RETURNING
-         id,
-         name,
-         description,
-         image_url,
-         language,
-         created_at`,
+      `
+      UPDATE ministries
+      SET
+        name = $1,
+        description = $2,
+        image_url = $3,
+        language = $4
+      WHERE id = $5
+      RETURNING *
+      `,
       [
-        ministryName,
-        ministryDescription,
-        finalImageUrl,
-        ministryLanguage,
+        name,
+        description || null,
+        imageUrl,
+        language,
         id,
       ]
     );
 
-    // DELETE OLD IMAGE AFTER SUCCESSFUL UPDATE
-
+    // Delete old image only after successful database update
     if (
       uploadedImage &&
-      oldMinistry.image_url
+      oldMinistry.image_url &&
+      oldMinistry.image_url !== imageUrl
     ) {
-      try {
-        await deleteManagedS3Object(
-          oldMinistry.image_url
-        );
-      } catch (deleteError) {
-        console.error(
-          "Old ministry image cleanup error:",
-          deleteError
-        );
-      }
+      await deleteOldImage(oldMinistry.image_url);
     }
 
     return res.status(200).json({
@@ -310,25 +291,19 @@ const updateMinistry = async (req, res) => {
   } catch (error) {
     console.error("Update ministry error:", error);
 
-    // CLEAN UP NEW IMAGE IF UPDATE FAILS
+    // Remove newly uploaded image if update failed
+    await cleanupUploadedImage(uploadedImage?.key);
 
-    if (uploadedImage?.key) {
-      try {
-        await deleteManagedS3Object(
-          uploadedImage.key
-        );
-      } catch (cleanupError) {
-        console.error(
-          "New ministry image cleanup error:",
-          cleanupError
-        );
-      }
+    if (error.code === "23505") {
+      return res.status(409).json({
+        success: false,
+        message: "This ministry already exists.",
+      });
     }
 
     return res.status(500).json({
       success: false,
-      message: "Failed to update ministry.",
-      error: error.message,
+      message: "Unable to update ministry. Please try again.",
     });
   }
 };
@@ -342,54 +317,44 @@ const deleteMinistry = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // GET MINISTRY
+    if (!id || !/^\d+$/.test(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ministry ID.",
+      });
+    }
 
-    const ministryResult = await pool.query(
-      `SELECT id, name, image_url
-       FROM ministries
-       WHERE id = $1`,
+    // Find ministry before deleting
+    const existingResult = await pool.query(
+      `
+      SELECT id, name, image_url
+      FROM ministries
+      WHERE id = $1
+      LIMIT 1
+      `,
       [id]
     );
 
-    if (ministryResult.rows.length === 0) {
+    if (existingResult.rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: "Ministry not found.",
       });
     }
 
-    const ministry = ministryResult.rows[0];
+    const ministry = existingResult.rows[0];
 
-    // DELETE DATABASE RECORD
-
-    const result = await pool.query(
-      `DELETE FROM ministries
-       WHERE id = $1
-       RETURNING id`,
+    // Delete ministry from database
+    await pool.query(
+      `
+      DELETE FROM ministries
+      WHERE id = $1
+      `,
       [id]
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Ministry not found.",
-      });
-    }
-
-    // DELETE ASSOCIATED S3 IMAGE
-
-    if (ministry.image_url) {
-      try {
-        await deleteManagedS3Object(
-          ministry.image_url
-        );
-      } catch (deleteError) {
-        console.error(
-          "Ministry image cleanup error:",
-          deleteError
-        );
-      }
-    }
+    // Delete associated S3 image after successful DB deletion
+    await deleteOldImage(ministry.image_url);
 
     return res.status(200).json({
       success: true,
@@ -399,9 +364,18 @@ const deleteMinistry = async (req, res) => {
   } catch (error) {
     console.error("Delete ministry error:", error);
 
+    // Foreign key constraint violation
+    if (error.code === "23503") {
+      return res.status(409).json({
+        success: false,
+        message:
+          "This ministry is linked to existing songs. Remove or reassign those songs before deleting this ministry.",
+      });
+    }
+
     return res.status(500).json({
       success: false,
-      message: "Failed to delete ministry.",
+      message: "Unable to delete ministry. Please try again.",
     });
   }
 };
