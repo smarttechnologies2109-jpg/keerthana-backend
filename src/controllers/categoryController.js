@@ -1,174 +1,133 @@
-const pool = require("../config/db");
 
+const pool = require("../config/db");
 
 /* =========================================================
    GET ALL PUBLIC CATEGORIES
-
    GET /api/categories
 ========================================================= */
 
-const getCategories = async (
-  req,
-  res
-) => {
-
+const getCategories = async (req, res) => {
   try {
+    const result = await pool.query(`
+      SELECT
+        c.id,
+        c.name,
 
-    const result =
-      await pool.query(`
-        SELECT
-          c.id,
-          c.name,
-          c.created_at,
+        COALESCE(NULLIF(c.name_english, ''), c.name)
+          AS name_english,
 
-          COUNT(s.id)::integer
-            AS song_count
+        COALESCE(NULLIF(c.name_telugu, ''), c.name)
+          AS name_telugu,
 
-        FROM categories c
+        c.created_at,
 
-        LEFT JOIN songs s
-          ON s.category_id = c.id
+        COUNT(s.id)::integer AS song_count
 
-        GROUP BY
-          c.id,
-          c.name,
-          c.created_at
+      FROM public.categories c
 
-        ORDER BY
-          c.name ASC
-      `);
+      LEFT JOIN public.songs s
+        ON s.category_id = c.id
 
+      GROUP BY
+        c.id,
+        c.name,
+        c.name_english,
+        c.name_telugu,
+        c.created_at
+
+      ORDER BY c.name ASC
+    `);
 
     return res.status(200).json({
-
       success: true,
-
-      count:
-        result.rows.length,
-
-      categories:
-        result.rows,
-
+      count: result.rows.length,
+      categories: result.rows,
     });
-
   } catch (error) {
-
-    console.error(
-      "Public get categories error:",
-      error
-    );
-
+    console.error("Public get categories error:", error);
 
     return res.status(500).json({
-
       success: false,
-
-      message:
-        "Unable to load categories",
-
+      message: "Unable to load categories.",
     });
-
   }
-
 };
-
 
 /* =========================================================
    GET CATEGORY BY ID
-
    GET /api/categories/:id
 ========================================================= */
 
-const getCategoryById = async (
-  req,
-  res
-) => {
-
+const getCategoryById = async (req, res) => {
   try {
+    const { id } = req.params;
 
-    const {
-      id,
-    } = req.params;
-
-
-    const result =
-      await pool.query(
-        `
-        SELECT
-          c.id,
-          c.name,
-          c.created_at,
-
-          COUNT(s.id)::integer
-            AS song_count
-
-        FROM categories c
-
-        LEFT JOIN songs s
-          ON s.category_id = c.id
-
-        WHERE c.id = $1
-
-        GROUP BY
-          c.id,
-          c.name,
-          c.created_at
-        `,
-        [id]
-      );
-
-
-    if (
-      result.rows.length === 0
-    ) {
-
-      return res.status(404).json({
-
+    if (!id || !/^\d+$/.test(id)) {
+      return res.status(400).json({
         success: false,
-
-        message:
-          "Category not found",
-
+        message: "Invalid category ID.",
       });
-
     }
 
+    const result = await pool.query(
+      `
+      SELECT
+        c.id,
+        c.name,
 
-    return res.status(200).json({
+        COALESCE(NULLIF(c.name_english, ''), c.name)
+          AS name_english,
 
-      success: true,
+        COALESCE(NULLIF(c.name_telugu, ''), c.name)
+          AS name_telugu,
 
-      category:
-        result.rows[0],
+        c.created_at,
 
-    });
+        COUNT(s.id)::integer AS song_count
 
-  } catch (error) {
+      FROM public.categories c
 
-    console.error(
-      "Public get category error:",
-      error
+      LEFT JOIN public.songs s
+        ON s.category_id = c.id
+
+      WHERE c.id = $1
+
+      GROUP BY
+        c.id,
+        c.name,
+        c.name_english,
+        c.name_telugu,
+        c.created_at
+      `,
+      [id]
     );
 
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Category not found.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      category: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Public get category error:", error);
 
     return res.status(500).json({
-
       success: false,
-
-      message:
-        "Unable to load category",
-
+      message: "Unable to load category.",
     });
-
   }
-
 };
 
+/* =========================================================
+   EXPORTS
+========================================================= */
 
 module.exports = {
-
   getCategories,
-
   getCategoryById,
-
 };

@@ -1,10 +1,11 @@
+
 const pool = require("../config/db");
 const fs = require("fs");
 const path = require("path");
 
-/* =========================================================
-   SUPPORTED LANGUAGES
-========================================================= */
+// =====================================================
+// SUPPORTED LANGUAGES
+// =====================================================
 
 const ALLOWED_LANGUAGES = [
   "Telugu",
@@ -15,9 +16,53 @@ const ALLOWED_LANGUAGES = [
   "Tamil",
 ];
 
-/* =========================================================
-   GET ALL ALBUMS
-========================================================= */
+// =====================================================
+// HELPER: SAFE LOCAL ALBUM COVER DELETION
+// =====================================================
+
+const deleteAlbumCover = (coverUrl) => {
+  if (
+    !coverUrl ||
+    !coverUrl.startsWith("/uploads/albums/")
+  ) {
+    return;
+  }
+
+  const relativePath = coverUrl.replace(/^\/+/, "");
+
+  const uploadDirectory = path.resolve(
+    process.cwd(),
+    "uploads",
+    "albums"
+  );
+
+  const filePath = path.resolve(
+    process.cwd(),
+    relativePath
+  );
+
+  // Prevent deleting files outside the album upload directory.
+  if (
+    !filePath.startsWith(uploadDirectory + path.sep)
+  ) {
+    console.error("Invalid album cover path:", coverUrl);
+    return;
+  }
+
+  fs.unlink(filePath, (error) => {
+    if (error && error.code !== "ENOENT") {
+      console.error(
+        "Unable to delete album cover:",
+        error
+      );
+    }
+  });
+};
+
+// =====================================================
+// GET ALL ALBUMS
+// GET /api/admin/albums
+// =====================================================
 
 const getAlbums = async (req, res) => {
   try {
@@ -25,23 +70,53 @@ const getAlbums = async (req, res) => {
       SELECT
         al.id,
         al.title,
+        COALESCE(
+          NULLIF(al.title_english, ''),
+          al.title
+        ) AS title_english,
+
+        COALESCE(
+          NULLIF(al.title_telugu, ''),
+          al.title
+        ) AS title_telugu,
+
         al.language,
         al.artist_id,
         al.cover_url,
         al.release_year,
         al.created_at,
+
         ar.name AS artist_name,
+
+        COALESCE(
+          NULLIF(ar.name_english, ''),
+          ar.name
+        ) AS artist_name_english,
+
+        COALESCE(
+          NULLIF(ar.name_telugu, ''),
+          ar.name
+        ) AS artist_name_telugu,
+
         ar.language AS artist_language,
+
         COUNT(s.id)::integer AS song_count
+
       FROM albums al
+
       LEFT JOIN artists ar
         ON al.artist_id = ar.id
+
       LEFT JOIN songs s
         ON s.album_id = al.id
+
       GROUP BY
         al.id,
         ar.name,
+        ar.name_english,
+        ar.name_telugu,
         ar.language
+
       ORDER BY
         al.created_at DESC,
         al.id DESC
@@ -52,6 +127,7 @@ const getAlbums = async (req, res) => {
       count: result.rows.length,
       albums: result.rows,
     });
+
   } catch (error) {
     console.error("Admin get albums error:", error);
 
@@ -62,33 +138,54 @@ const getAlbums = async (req, res) => {
   }
 };
 
-/* =========================================================
-   CREATE ALBUM
-========================================================= */
+// =====================================================
+// CREATE ALBUM
+// POST /api/admin/albums
+// =====================================================
 
 const createAlbum = async (req, res) => {
   try {
     const {
       title,
+      title_english,
+      title_telugu,
       language,
       artist_id,
       release_year,
     } = req.body;
 
-    /* =====================================================
-       TITLE
-    ===================================================== */
+    // =================================================
+    // BILINGUAL TITLES
+    // =================================================
 
-    if (!title || !title.trim()) {
+    const englishTitle = String(
+      title_english || title || ""
+    ).trim();
+
+    const teluguTitle = String(
+      title_telugu || title || ""
+    ).trim();
+
+    if (!englishTitle) {
       return res.status(400).json({
         success: false,
-        message: "Album title is required",
+        message: "English album title is required",
       });
     }
 
-    /* =====================================================
-       LANGUAGE
-    ===================================================== */
+    if (!teluguTitle) {
+      return res.status(400).json({
+        success: false,
+        message: "Telugu album title is required",
+      });
+    }
+
+    // Legacy title remains Telugu for compatibility.
+    const albumTitle = teluguTitle;
+
+    // =================================================
+    // LANGUAGE
+    // =================================================
 
     const albumLanguage = String(
       language || "Telugu"
@@ -101,17 +198,20 @@ const createAlbum = async (req, res) => {
       });
     }
 
-    /* =====================================================
-       ARTIST
-       Artist language must match album language
-    ===================================================== */
+    // =================================================
+    // ARTIST
+    // Artist language must match album language.
+    // =================================================
 
     let artistId = null;
 
     if (artist_id) {
       artistId = Number(artist_id);
 
-      if (!Number.isInteger(artistId)) {
+      if (
+        !Number.isInteger(artistId) ||
+        artistId <= 0
+      ) {
         return res.status(400).json({
           success: false,
           message: "Invalid artist",
@@ -120,11 +220,11 @@ const createAlbum = async (req, res) => {
 
       const artistResult = await pool.query(
         `
-        SELECT
-          id,
-          language
-        FROM artists
-        WHERE id = $1
+          SELECT
+            id,
+            language
+          FROM artists
+          WHERE id = $1
         `,
         [artistId]
       );
@@ -137,8 +237,7 @@ const createAlbum = async (req, res) => {
       }
 
       if (
-        artistResult.rows[0].language !==
-        albumLanguage
+        artistResult.rows[0].language !== albumLanguage
       ) {
         return res.status(400).json({
           success: false,
@@ -148,13 +247,17 @@ const createAlbum = async (req, res) => {
       }
     }
 
-    /* =====================================================
-       RELEASE YEAR
-    ===================================================== */
+    // =================================================
+    // RELEASE YEAR
+    // =================================================
 
     let releaseYear = null;
 
-    if (release_year) {
+    if (
+      release_year !== undefined &&
+      release_year !== null &&
+      String(release_year).trim() !== ""
+    ) {
       releaseYear = Number(release_year);
 
       if (
@@ -169,9 +272,9 @@ const createAlbum = async (req, res) => {
       }
     }
 
-    /* =====================================================
-       COVER IMAGE
-    ===================================================== */
+    // =================================================
+    // COVER IMAGE
+    // =================================================
 
     let coverUrl = null;
 
@@ -179,32 +282,28 @@ const createAlbum = async (req, res) => {
       coverUrl = `/uploads/albums/${req.file.filename}`;
     }
 
-    /* =====================================================
-       INSERT
-    ===================================================== */
+    // =================================================
+    // INSERT ALBUM
+    // =================================================
 
     const result = await pool.query(
       `
-      INSERT INTO albums
-      (
-        title,
-        language,
-        artist_id,
-        cover_url,
-        release_year
-      )
-      VALUES
-      (
-        $1,
-        $2,
-        $3,
-        $4,
-        $5
-      )
-      RETURNING *
+        INSERT INTO albums (
+          title,
+          title_english,
+          title_telugu,
+          language,
+          artist_id,
+          cover_url,
+          release_year
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
       `,
       [
-        title.trim(),
+        albumTitle,
+        englishTitle,
+        teluguTitle,
         albumLanguage,
         artistId,
         coverUrl,
@@ -217,6 +316,7 @@ const createAlbum = async (req, res) => {
       message: "Album created successfully",
       album: result.rows[0],
     });
+
   } catch (error) {
     console.error("Create album error:", error);
 
@@ -227,9 +327,10 @@ const createAlbum = async (req, res) => {
   }
 };
 
-/* =========================================================
-   UPDATE ALBUM
-========================================================= */
+// =====================================================
+// UPDATE ALBUM
+// PUT /api/admin/albums/:id
+// =====================================================
 
 const updateAlbum = async (req, res) => {
   try {
@@ -237,25 +338,57 @@ const updateAlbum = async (req, res) => {
 
     const {
       title,
+      title_english,
+      title_telugu,
       language,
       artist_id,
       release_year,
     } = req.body;
 
-    /* =====================================================
-       TITLE
-    ===================================================== */
+    // =================================================
+    // VALIDATE ID
+    // =================================================
 
-    if (!title || !title.trim()) {
+    const albumId = Number(id);
+
+    if (!Number.isInteger(albumId) || albumId <= 0) {
       return res.status(400).json({
         success: false,
-        message: "Album title is required",
+        message: "Invalid album ID",
       });
     }
 
-    /* =====================================================
-       LANGUAGE
-    ===================================================== */
+    // =================================================
+    // BILINGUAL TITLES
+    // =================================================
+
+    const englishTitle = String(
+      title_english || title || ""
+    ).trim();
+
+    const teluguTitle = String(
+      title_telugu || title || ""
+    ).trim();
+
+    if (!englishTitle) {
+      return res.status(400).json({
+        success: false,
+        message: "English album title is required",
+      });
+    }
+
+    if (!teluguTitle) {
+      return res.status(400).json({
+        success: false,
+        message: "Telugu album title is required",
+      });
+    }
+
+    const albumTitle = teluguTitle;
+
+    // =================================================
+    // LANGUAGE
+    // =================================================
 
     const albumLanguage = String(
       language || "Telugu"
@@ -268,16 +401,19 @@ const updateAlbum = async (req, res) => {
       });
     }
 
-    /* =====================================================
-       ARTIST
-    ===================================================== */
+    // =================================================
+    // ARTIST
+    // =================================================
 
     let artistId = null;
 
     if (artist_id) {
       artistId = Number(artist_id);
 
-      if (!Number.isInteger(artistId)) {
+      if (
+        !Number.isInteger(artistId) ||
+        artistId <= 0
+      ) {
         return res.status(400).json({
           success: false,
           message: "Invalid artist",
@@ -286,11 +422,11 @@ const updateAlbum = async (req, res) => {
 
       const artistResult = await pool.query(
         `
-        SELECT
-          id,
-          language
-        FROM artists
-        WHERE id = $1
+          SELECT
+            id,
+            language
+          FROM artists
+          WHERE id = $1
         `,
         [artistId]
       );
@@ -303,8 +439,7 @@ const updateAlbum = async (req, res) => {
       }
 
       if (
-        artistResult.rows[0].language !==
-        albumLanguage
+        artistResult.rows[0].language !== albumLanguage
       ) {
         return res.status(400).json({
           success: false,
@@ -314,13 +449,17 @@ const updateAlbum = async (req, res) => {
       }
     }
 
-    /* =====================================================
-       RELEASE YEAR
-    ===================================================== */
+    // =================================================
+    // RELEASE YEAR
+    // =================================================
 
     let releaseYear = null;
 
-    if (release_year) {
+    if (
+      release_year !== undefined &&
+      release_year !== null &&
+      String(release_year).trim() !== ""
+    ) {
       releaseYear = Number(release_year);
 
       if (
@@ -335,19 +474,19 @@ const updateAlbum = async (req, res) => {
       }
     }
 
-    /* =====================================================
-       GET EXISTING ALBUM
-    ===================================================== */
+    // =================================================
+    // GET EXISTING ALBUM
+    // =================================================
 
     const existingResult = await pool.query(
       `
-      SELECT
-        id,
-        cover_url
-      FROM albums
-      WHERE id = $1
+        SELECT
+          id,
+          cover_url
+        FROM albums
+        WHERE id = $1
       `,
-      [id]
+      [albumId]
     );
 
     if (existingResult.rows.length === 0) {
@@ -357,84 +496,62 @@ const updateAlbum = async (req, res) => {
       });
     }
 
-    const existingAlbum =
-      existingResult.rows[0];
+    const existingAlbum = existingResult.rows[0];
 
-    /* =====================================================
-       COVER
-    ===================================================== */
+    // =================================================
+    // COVER IMAGE
+    // =================================================
 
-    let coverUrl =
-      existingAlbum.cover_url;
+    let coverUrl = existingAlbum.cover_url;
 
     if (req.file) {
-      coverUrl =
-        `/uploads/albums/${req.file.filename}`;
-
-      /* DELETE OLD IMAGE */
-
-      if (
-        existingAlbum.cover_url &&
-        existingAlbum.cover_url.startsWith(
-          "/uploads/albums/"
-        )
-      ) {
-        const oldFile = path.join(
-          process.cwd(),
-          existingAlbum.cover_url.replace(
-            /^\//,
-            ""
-          )
-        );
-
-        fs.unlink(
-          oldFile,
-          (error) => {
-            if (
-              error &&
-              error.code !== "ENOENT"
-            ) {
-              console.error(
-                "Unable to delete old album cover:",
-                error
-              );
-            }
-          }
-        );
-      }
+      coverUrl = `/uploads/albums/${req.file.filename}`;
     }
 
-    /* =====================================================
-       UPDATE
-    ===================================================== */
+    // =================================================
+    // UPDATE ALBUM
+    // =================================================
 
     const result = await pool.query(
       `
-      UPDATE albums
-      SET
-        title = $1,
-        language = $2,
-        artist_id = $3,
-        cover_url = $4,
-        release_year = $5
-      WHERE id = $6
-      RETURNING *
+        UPDATE albums
+        SET
+          title = $1,
+          title_english = $2,
+          title_telugu = $3,
+          language = $4,
+          artist_id = $5,
+          cover_url = $6,
+          release_year = $7
+        WHERE id = $8
+        RETURNING *
       `,
       [
-        title.trim(),
+        albumTitle,
+        englishTitle,
+        teluguTitle,
         albumLanguage,
         artistId,
         coverUrl,
         releaseYear,
-        id,
+        albumId,
       ]
     );
+
+    // Delete old local cover only after successful DB update.
+    if (
+      req.file &&
+      existingAlbum.cover_url !== coverUrl
+    ) {
+      deleteAlbumCover(existingAlbum.cover_url);
+    }
 
     return res.status(200).json({
       success: true,
       message: "Album updated successfully",
       album: result.rows[0],
     });
+
   } catch (error) {
     console.error("Update album error:", error);
 
@@ -445,26 +562,60 @@ const updateAlbum = async (req, res) => {
   }
 };
 
-/* =========================================================
-   DELETE ALBUM
-========================================================= */
+// =====================================================
+// DELETE ALBUM
+// DELETE /api/admin/albums/:id
+// =====================================================
 
 const deleteAlbum = async (req, res) => {
   try {
     const { id } = req.params;
 
-    /* =====================================================
-       CHECK SONGS
-    ===================================================== */
+    const albumId = Number(id);
+
+    if (!Number.isInteger(albumId) || albumId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid album ID",
+      });
+    }
+
+    // =================================================
+    // GET ALBUM
+    // =================================================
+
+    const albumResult = await pool.query(
+      `
+        SELECT
+          id,
+          cover_url
+        FROM albums
+        WHERE id = $1
+      `,
+      [albumId]
+    );
+
+    if (albumResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Album not found",
+      });
+    }
+
+    const coverUrl = albumResult.rows[0].cover_url;
+
+    // =================================================
+    // CHECK SONGS
+    // =================================================
 
     const songResult = await pool.query(
       `
-      SELECT
-        COUNT(*)::integer AS count
-      FROM songs
-      WHERE album_id = $1
+        SELECT
+          COUNT(*)::integer AS count
+        FROM songs
+        WHERE album_id = $1
       `,
-      [id]
+      [albumId]
     );
 
     if (songResult.rows[0].count > 0) {
@@ -475,77 +626,29 @@ const deleteAlbum = async (req, res) => {
       });
     }
 
-    /* =====================================================
-       GET COVER
-    ===================================================== */
-
-    const albumResult = await pool.query(
-      `
-      SELECT
-        cover_url
-      FROM albums
-      WHERE id = $1
-      `,
-      [id]
-    );
-
-    if (albumResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Album not found",
-      });
-    }
-
-    const coverUrl =
-      albumResult.rows[0].cover_url;
-
-    /* =====================================================
-       DELETE ALBUM
-    ===================================================== */
+    // =================================================
+    // DELETE ALBUM
+    // =================================================
 
     await pool.query(
       `
-      DELETE FROM albums
-      WHERE id = $1
+        DELETE FROM albums
+        WHERE id = $1
       `,
-      [id]
+      [albumId]
     );
 
-    /* =====================================================
-       DELETE COVER IMAGE
-    ===================================================== */
+    // =================================================
+    // DELETE LOCAL COVER IMAGE
+    // =================================================
 
-    if (
-      coverUrl &&
-      coverUrl.startsWith(
-        "/uploads/albums/"
-      )
-    ) {
-      const filePath = path.join(
-        process.cwd(),
-        coverUrl.replace(/^\//, "")
-      );
-
-      fs.unlink(
-        filePath,
-        (error) => {
-          if (
-            error &&
-            error.code !== "ENOENT"
-          ) {
-            console.error(
-              "Unable to delete album cover:",
-              error
-            );
-          }
-        }
-      );
-    }
+    deleteAlbumCover(coverUrl);
 
     return res.status(200).json({
       success: true,
       message: "Album deleted successfully",
     });
+
   } catch (error) {
     console.error("Delete album error:", error);
 
@@ -555,6 +658,10 @@ const deleteAlbum = async (req, res) => {
     });
   }
 };
+
+// =====================================================
+// EXPORTS
+// =====================================================
 
 module.exports = {
   getAlbums,

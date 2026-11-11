@@ -51,6 +51,9 @@ const userRoutes = require("./routes/userRoutes");
 // =========================================================
 
 const adminRoutes = require("./routes/adminRoutes");
+const adminDashboardRoutes = require(
+  "./routes/adminDashboardRoutes"
+);
 const adminSongRoutes = require("./routes/adminSongRoutes");
 const adminArtistRoutes = require("./routes/adminArtistRoutes");
 const adminAlbumRoutes = require("./routes/adminAlbumRoutes");
@@ -940,6 +943,14 @@ app.use(
 app.use(
   "/api/admin",
   adminRoutes
+);
+// =========================================================
+// ADMIN DASHBOARD STATISTICS
+// =========================================================
+
+app.use(
+  "/api/admin",
+  adminDashboardRoutes
 );
 
 // =========================================================

@@ -12,6 +12,8 @@ const getMinistries = async (req, res) => {
       SELECT
         id,
         name,
+        COALESCE(NULLIF(name_english, ''), name) AS name_english,
+        COALESCE(NULLIF(name_telugu, ''), name) AS name_telugu,
         description,
         image_url,
         language,
@@ -21,7 +23,6 @@ const getMinistries = async (req, res) => {
     `);
 
     return res.status(200).json(result.rows);
-
   } catch (error) {
     console.error("Get ministries error:", error);
 
@@ -53,6 +54,8 @@ const getMinistryById = async (req, res) => {
       SELECT
         id,
         name,
+        COALESCE(NULLIF(name_english, ''), name) AS name_english,
+        COALESCE(NULLIF(name_telugu, ''), name) AS name_telugu,
         description,
         image_url,
         language,
@@ -71,7 +74,6 @@ const getMinistryById = async (req, res) => {
     }
 
     return res.status(200).json(result.rows[0]);
-
   } catch (error) {
     console.error("Get ministry error:", error);
 
@@ -98,15 +100,15 @@ const getSongsByMinistry = async (req, res) => {
       });
     }
 
-    /* -----------------------------------------------------
-       CHECK MINISTRY EXISTS
-    ----------------------------------------------------- */
+    /* CHECK MINISTRY EXISTS */
 
     const ministryResult = await pool.query(
       `
       SELECT
         id,
         name,
+        COALESCE(NULLIF(name_english, ''), name) AS name_english,
+        COALESCE(NULLIF(name_telugu, ''), name) AS name_telugu,
         description,
         image_url,
         language,
@@ -124,9 +126,7 @@ const getSongsByMinistry = async (req, res) => {
       });
     }
 
-    /* -----------------------------------------------------
-       GET SONGS BELONGING TO MINISTRY
-    ----------------------------------------------------- */
+    /* GET SONGS BELONGING TO MINISTRY */
 
     const result = await pool.query(
       `
@@ -155,6 +155,10 @@ const getSongsByMinistry = async (req, res) => {
 
         s.category_id,
         c.name AS category_name,
+        COALESCE(NULLIF(c.name_english, ''), c.name)
+          AS category_name_english,
+        COALESCE(NULLIF(c.name_telugu, ''), c.name)
+          AS category_name_telugu,
 
         s.ministry_id
 
@@ -184,7 +188,6 @@ const getSongsByMinistry = async (req, res) => {
       count: result.rows.length,
       songs: result.rows,
     });
-
   } catch (error) {
     console.error("Get songs by ministry error:", error);
 
