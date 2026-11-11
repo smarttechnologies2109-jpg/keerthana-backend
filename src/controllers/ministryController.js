@@ -1,3 +1,4 @@
+
 const pool = require("../config/db");
 
 /* =========================================================
@@ -13,20 +14,16 @@ const getMinistries = async (req, res) => {
         name,
         description,
         image_url,
+        language,
         created_at
-      FROM ministries
+      FROM public.ministries
       ORDER BY name ASC
     `);
 
-    return res.status(200).json(
-      result.rows
-    );
+    return res.status(200).json(result.rows);
 
   } catch (error) {
-    console.error(
-      "Get ministries error:",
-      error
-    );
+    console.error("Get ministries error:", error);
 
     return res.status(500).json({
       success: false,
@@ -34,7 +31,6 @@ const getMinistries = async (req, res) => {
     });
   }
 };
-
 
 /* =========================================================
    GET SINGLE MINISTRY
@@ -45,6 +41,13 @@ const getMinistryById = async (req, res) => {
   try {
     const { id } = req.params;
 
+    if (!id || !/^\d+$/.test(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ministry ID.",
+      });
+    }
+
     const result = await pool.query(
       `
       SELECT
@@ -52,8 +55,9 @@ const getMinistryById = async (req, res) => {
         name,
         description,
         image_url,
+        language,
         created_at
-      FROM ministries
+      FROM public.ministries
       WHERE id = $1
       `,
       [id]
@@ -66,15 +70,10 @@ const getMinistryById = async (req, res) => {
       });
     }
 
-    return res.status(200).json(
-      result.rows[0]
-    );
+    return res.status(200).json(result.rows[0]);
 
   } catch (error) {
-    console.error(
-      "Get ministry error:",
-      error
-    );
+    console.error("Get ministry error:", error);
 
     return res.status(500).json({
       success: false,
@@ -82,7 +81,6 @@ const getMinistryById = async (req, res) => {
     });
   }
 };
-
 
 /* =========================================================
    GET SONGS BY MINISTRY
@@ -93,16 +91,27 @@ const getSongsByMinistry = async (req, res) => {
   try {
     const { id } = req.params;
 
+    if (!id || !/^\d+$/.test(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ministry ID.",
+      });
+    }
+
     /* -----------------------------------------------------
-       Check ministry exists
+       CHECK MINISTRY EXISTS
     ----------------------------------------------------- */
 
     const ministryResult = await pool.query(
       `
       SELECT
         id,
-        name
-      FROM ministries
+        name,
+        description,
+        image_url,
+        language,
+        created_at
+      FROM public.ministries
       WHERE id = $1
       `,
       [id]
@@ -115,9 +124,8 @@ const getSongsByMinistry = async (req, res) => {
       });
     }
 
-
     /* -----------------------------------------------------
-       Get songs belonging to ministry
+       GET SONGS BELONGING TO MINISTRY
     ----------------------------------------------------- */
 
     const result = await pool.query(
@@ -150,15 +158,15 @@ const getSongsByMinistry = async (req, res) => {
 
         s.ministry_id
 
-      FROM songs s
+      FROM public.songs s
 
-      LEFT JOIN artists ar
+      LEFT JOIN public.artists ar
         ON s.artist_id = ar.id
 
-      LEFT JOIN albums al
+      LEFT JOIN public.albums al
         ON s.album_id = al.id
 
-      LEFT JOIN categories c
+      LEFT JOIN public.categories c
         ON s.category_id = c.id
 
       WHERE s.ministry_id = $1
@@ -178,10 +186,7 @@ const getSongsByMinistry = async (req, res) => {
     });
 
   } catch (error) {
-    console.error(
-      "Get songs by ministry error:",
-      error
-    );
+    console.error("Get songs by ministry error:", error);
 
     return res.status(500).json({
       success: false,
@@ -190,6 +195,9 @@ const getSongsByMinistry = async (req, res) => {
   }
 };
 
+/* =========================================================
+   EXPORTS
+========================================================= */
 
 module.exports = {
   getMinistries,
