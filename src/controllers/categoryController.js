@@ -1,8 +1,12 @@
+
 const pool = require("../config/db");
 
 /* =========================================================
    GET ALL PUBLIC CATEGORIES
    GET /api/categories
+
+   All 20 existing categories are Telugu categories.
+   Return language explicitly for the frontend dropdown.
 ========================================================= */
 
 const getCategories = async (req, res) => {
@@ -17,6 +21,8 @@ const getCategories = async (req, res) => {
 
         COALESCE(NULLIF(c.name_telugu, ''), c.name)
           AS name_telugu,
+
+        'Telugu'::text AS language,
 
         c.image_url,
         c.created_at,
@@ -44,6 +50,7 @@ const getCategories = async (req, res) => {
       count: result.rows.length,
       categories: result.rows,
     });
+
   } catch (error) {
     console.error("Public get categories error:", error);
 
@@ -82,6 +89,8 @@ const getCategoryById = async (req, res) => {
         COALESCE(NULLIF(c.name_telugu, ''), c.name)
           AS name_telugu,
 
+        'Telugu'::text AS language,
+
         c.image_url,
         c.created_at,
 
@@ -116,6 +125,7 @@ const getCategoryById = async (req, res) => {
       success: true,
       category: result.rows[0],
     });
+
   } catch (error) {
     console.error("Public get category error:", error);
 

@@ -708,6 +708,15 @@ const getOwnerStatistics = async (req, res) => {
       FROM categories
     `);
 
+
+    // =====================================================
+// TOTAL MINISTRIES
+// =====================================================
+
+const totalMinistriesResult = await pool.query(`
+  SELECT COUNT(*)::int AS count
+  FROM ministries
+`);
 /* =====================================================
    MUSIC COLLECTION BY LANGUAGE
    - Songs
@@ -1641,6 +1650,10 @@ const musicByLanguage =
           Number(
             totalCategoriesResult.rows[0]?.count || 0
           ),
+
+          totalMinistries: Number(
+    totalMinistriesResult.rows[0]?.count || 0
+  ),
       },
 
 
