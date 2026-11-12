@@ -1,5 +1,30 @@
-
 const pool = require("../config/db");
+
+/* =========================================================
+   MINISTRY SELECT QUERY
+   Reused by ministry endpoints
+========================================================= */
+
+const MINISTRY_SELECT_QUERY = `
+  SELECT
+    id,
+    name,
+    COALESCE(NULLIF(name_english, ''), name) AS name_english,
+    COALESCE(NULLIF(name_telugu, ''), name) AS name_telugu,
+    description,
+    image_url,
+    language,
+    created_at
+  FROM public.ministries
+`;
+
+/* =========================================================
+   VALIDATE MINISTRY ID
+========================================================= */
+
+const isValidMinistryId = (id) => {
+  return /^\d+$/.test(String(id || "")) && Number(id) > 0;
+};
 
 /* =========================================================
    GET ALL MINISTRIES
@@ -9,17 +34,8 @@ const pool = require("../config/db");
 const getMinistries = async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT
-        id,
-        name,
-        COALESCE(NULLIF(name_english, ''), name) AS name_english,
-        COALESCE(NULLIF(name_telugu, ''), name) AS name_telugu,
-        description,
-        image_url,
-        language,
-        created_at
-      FROM public.ministries
-      ORDER BY name ASC
+      ${MINISTRY_SELECT_QUERY}
+      ORDER BY name ASC, id ASC
     `);
 
     return res.status(200).json(result.rows);
@@ -42,7 +58,7 @@ const getMinistryById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (!id || !/^\d+$/.test(id)) {
+    if (!isValidMinistryId(id)) {
       return res.status(400).json({
         success: false,
         message: "Invalid ministry ID.",
@@ -51,17 +67,9 @@ const getMinistryById = async (req, res) => {
 
     const result = await pool.query(
       `
-      SELECT
-        id,
-        name,
-        COALESCE(NULLIF(name_english, ''), name) AS name_english,
-        COALESCE(NULLIF(name_telugu, ''), name) AS name_telugu,
-        description,
-        image_url,
-        language,
-        created_at
-      FROM public.ministries
-      WHERE id = $1
+        ${MINISTRY_SELECT_QUERY}
+        WHERE id = $1
+        LIMIT 1
       `,
       [id]
     );
@@ -75,7 +83,7 @@ const getMinistryById = async (req, res) => {
 
     return res.status(200).json(result.rows[0]);
   } catch (error) {
-    console.error("Get ministry error:", error);
+    console.error("Get ministry by ID error:", error);
 
     return res.status(500).json({
       success: false,
@@ -93,28 +101,22 @@ const getSongsByMinistry = async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (!id || !/^\d+$/.test(id)) {
+    if (!isValidMinistryId(id)) {
       return res.status(400).json({
         success: false,
         message: "Invalid ministry ID.",
       });
     }
 
-    /* CHECK MINISTRY EXISTS */
+    /* -----------------------------------------------------
+       CHECK MINISTRY EXISTS
+    ----------------------------------------------------- */
 
     const ministryResult = await pool.query(
       `
-      SELECT
-        id,
-        name,
-        COALESCE(NULLIF(name_english, ''), name) AS name_english,
-        COALESCE(NULLIF(name_telugu, ''), name) AS name_telugu,
-        description,
-        image_url,
-        language,
-        created_at
-      FROM public.ministries
-      WHERE id = $1
+        ${MINISTRY_SELECT_QUERY}
+        WHERE id = $1
+        LIMIT 1
       `,
       [id]
     );
@@ -126,58 +128,66 @@ const getSongsByMinistry = async (req, res) => {
       });
     }
 
-    /* GET SONGS BELONGING TO MINISTRY */
+    /* -----------------------------------------------------
+       GET SONGS BELONGING TO MINISTRY
+    ----------------------------------------------------- */
 
-    const result = await pool.query(
+    const songsResult = await pool.query(
       `
-      SELECT
-        s.id,
-        s.title,
-        s.title_english,
-        s.artist,
-        s.category,
-        s.language,
-        s.lyrics,
-        s.audio_url,
-        s.cover_url,
-        s.duration,
-        s.featured,
-        s.moods,
-        s.created_at,
+        SELECT
+          s.id,
+          s.title,
+          s.title_english,
+          s.artist,
+          s.category,
+          s.language,
+          s.lyrics,
+          s.audio_url,
+          s.cover_url,
+          s.duration,
+          s.featured,
+          s.moods,
+          s.created_at,
 
-        s.artist_id,
-        ar.name AS artist_name,
-        ar.image_url AS artist_image,
+          s.artist_id,
+          ar.name AS artist_name,
+          ar.image_url AS artist_image,
 
-        s.album_id,
-        al.title AS album_title,
-        al.cover_url AS album_cover,
+          s.album_id,
+          al.title AS album_title,
+          al.cover_url AS album_cover,
 
-        s.category_id,
-        c.name AS category_name,
-        COALESCE(NULLIF(c.name_english, ''), c.name)
-          AS category_name_english,
-        COALESCE(NULLIF(c.name_telugu, ''), c.name)
-          AS category_name_telugu,
+          s.category_id,
+          c.name AS category_name,
 
-        s.ministry_id
+          COALESCE(
+            NULLIF(c.name_english, ''),
+            c.name
+          ) AS category_name_english,
 
-      FROM public.songs s
+          COALESCE(
+            NULLIF(c.name_telugu, ''),
+            c.name
+          ) AS category_name_telugu,
 
-      LEFT JOIN public.artists ar
-        ON s.artist_id = ar.id
+          s.ministry_id
 
-      LEFT JOIN public.albums al
-        ON s.album_id = al.id
+        FROM public.songs s
 
-      LEFT JOIN public.categories c
-        ON s.category_id = c.id
+        LEFT JOIN public.artists ar
+          ON s.artist_id = ar.id
 
-      WHERE s.ministry_id = $1
+        LEFT JOIN public.albums al
+          ON s.album_id = al.id
 
-      ORDER BY
-        s.created_at DESC,
-        s.id DESC
+        LEFT JOIN public.categories c
+          ON s.category_id = c.id
+
+        WHERE s.ministry_id = $1
+
+        ORDER BY
+          s.created_at DESC NULLS LAST,
+          s.id DESC
       `,
       [id]
     );
@@ -185,8 +195,8 @@ const getSongsByMinistry = async (req, res) => {
     return res.status(200).json({
       success: true,
       ministry: ministryResult.rows[0],
-      count: result.rows.length,
-      songs: result.rows,
+      count: songsResult.rows.length,
+      songs: songsResult.rows,
     });
   } catch (error) {
     console.error("Get songs by ministry error:", error);
