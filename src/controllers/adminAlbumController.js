@@ -20,39 +20,132 @@ const isValidId = (id) =>
 
 const normalize = (value) => String(value || "").trim();
 
+const containsTelugu = (value) =>
+  /[\u0C00-\u0C7F]/.test(String(value || ""));
+
+// =====================================================
+// GET ALL ALBUMS
+// =====================================================
+
 const getAlbums = async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
         al.id,
         al.title,
-        COALESCE(NULLIF(al.title_english, ''), al.title) AS title_english,
-        COALESCE(NULLIF(al.title_telugu, ''), al.title) AS title_telugu,
-        al.language,
+
+        COALESCE(
+          NULLIF(BTRIM(al.title_english), ''),
+          CASE
+            WHEN COALESCE(al.title, '') !~ '[ఀ-౿]'
+            THEN NULLIF(BTRIM(al.title), '')
+            ELSE NULL
+          END,
+          ''
+        ) AS title_english,
+
+        COALESCE(
+          NULLIF(BTRIM(al.title_telugu), ''),
+          CASE
+            WHEN COALESCE(al.title, '') ~ '[ఀ-౿]'
+            THEN NULLIF(BTRIM(al.title), '')
+            ELSE NULL
+          END,
+          ''
+        ) AS title_telugu,
+
+        CASE
+          WHEN LOWER(BTRIM(COALESCE(al.language, '')))
+            IN ('te', 'te-in', 'telugu', 'తెలుగు')
+            THEN 'Telugu'
+
+          WHEN LOWER(BTRIM(COALESCE(al.language, '')))
+            IN ('hi', 'hi-in', 'hindi', 'हिन्दी')
+            THEN 'Hindi'
+
+          WHEN LOWER(BTRIM(COALESCE(al.language, '')))
+            IN ('en', 'en-in', 'english')
+            THEN 'English'
+
+          WHEN LOWER(BTRIM(COALESCE(al.language, '')))
+            IN ('ml', 'ml-in', 'malayalam')
+            THEN 'Malayalam'
+
+          WHEN LOWER(BTRIM(COALESCE(al.language, '')))
+            IN ('kn', 'kn-in', 'kannada')
+            THEN 'Kannada'
+
+          WHEN LOWER(BTRIM(COALESCE(al.language, '')))
+            IN ('ta', 'ta-in', 'tamil')
+            THEN 'Tamil'
+
+          ELSE COALESCE(NULLIF(BTRIM(al.language), ''), 'Telugu')
+        END AS language,
+
         al.artist_id,
         al.cover_url,
         al.release_year,
         al.created_at,
+
         ar.name AS artist_name,
-        COALESCE(NULLIF(ar.name_english, ''), ar.name) AS artist_name_english,
-        COALESCE(NULLIF(ar.name_telugu, ''), ar.name) AS artist_name_telugu,
+
+        COALESCE(
+          NULLIF(BTRIM(ar.name_english), ''),
+          ar.name
+        ) AS artist_name_english,
+
+        COALESCE(
+          NULLIF(BTRIM(ar.name_telugu), ''),
+          ar.name
+        ) AS artist_name_telugu,
+
         ar.language AS artist_language,
+
         COUNT(DISTINCT s.id)::integer AS song_count
+
       FROM public.albums al
-      LEFT JOIN public.artists ar ON al.artist_id = ar.id
-      LEFT JOIN public.songs s ON s.album_id = al.id
+
+      LEFT JOIN public.artists ar
+        ON al.artist_id = ar.id
+
+      LEFT JOIN public.songs s
+        ON s.album_id = al.id
+
       GROUP BY
-        al.id, ar.name, ar.name_english, ar.name_telugu, ar.language
-      ORDER BY al.created_at DESC, al.id DESC
+        al.id,
+        ar.name,
+        ar.name_english,
+        ar.name_telugu,
+        ar.language
+
+      ORDER BY
+        al.created_at DESC NULLS LAST,
+        al.id DESC
     `);
+
+    const albums = result.rows.map((album) => ({
+      ...album,
+
+      english_name: album.title_english,
+      name_english: album.title_english,
+
+      telugu_name: album.title_telugu,
+      name_telugu: album.title_telugu,
+
+      album_language: album.language,
+
+      song_count: Number(album.song_count || 0),
+    }));
 
     return res.status(200).json({
       success: true,
-      count: result.rows.length,
-      albums: result.rows,
+      count: albums.length,
+      albums,
     });
+
   } catch (error) {
     console.error("Admin get albums error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Unable to load albums.",
@@ -60,26 +153,49 @@ const getAlbums = async (req, res) => {
   }
 };
 
+// =====================================================
+// VALIDATE ALBUM FIELDS
+// =====================================================
+
 const validateAlbumFields = async ({
   title_english,
+  english_title,
   title_telugu,
+  telugu_title,
   title,
   language,
   artist_id,
   release_year,
 }) => {
-  const englishTitle = normalize(title_english || title);
-  const teluguTitle = normalize(title_telugu || title);
+  const rawEnglishTitle = normalize(
+    title_english || english_title
+  );
+
+  const rawTeluguTitle = normalize(
+    title_telugu || telugu_title
+  );
+
+  const englishTitle =
+    rawEnglishTitle ||
+    (!containsTelugu(title) ? normalize(title) : "");
+
+  const teluguTitle =
+    rawTeluguTitle ||
+    (containsTelugu(title) ? normalize(title) : "");
+
   const albumLanguage = normalize(language || "Telugu");
 
   if (!englishTitle || !teluguTitle) {
     return {
-      error: "English and Telugu album titles are required.",
+      error:
+        "English and Telugu album titles are required. Please enter both names separately.",
     };
   }
 
   if (!ALLOWED_LANGUAGES.includes(albumLanguage)) {
-    return { error: "Invalid album language." };
+    return {
+      error: "Invalid album language.",
+    };
   }
 
   let artistId = null;
@@ -88,28 +204,40 @@ const validateAlbumFields = async ({
     artistId = Number(artist_id);
 
     if (!Number.isInteger(artistId) || artistId <= 0) {
-      return { error: "Invalid artist." };
+      return {
+        error: "Invalid artist.",
+      };
     }
 
     const artist = await pool.query(
-      `SELECT id, language FROM public.artists WHERE id = $1`,
+      `
+      SELECT id, language
+      FROM public.artists
+      WHERE id = $1
+      `,
       [artistId]
     );
 
     if (!artist.rows.length) {
-      return { error: "Selected artist does not exist." };
+      return {
+        error: "Selected artist does not exist.",
+      };
     }
 
     if (artist.rows[0].language !== albumLanguage) {
       return {
-        error: "Selected artist language must match album language.",
+        error:
+          "Selected artist language must match album language.",
       };
     }
   }
 
   let releaseYear = null;
 
-  if (release_year !== undefined && normalize(release_year)) {
+  if (
+    release_year !== undefined &&
+    normalize(release_year)
+  ) {
     releaseYear = Number(release_year);
 
     if (
@@ -117,7 +245,9 @@ const validateAlbumFields = async ({
       releaseYear < 1900 ||
       releaseYear > 2100
     ) {
-      return { error: "Please enter a valid release year." };
+      return {
+        error: "Please enter a valid release year.",
+      };
     }
   }
 
@@ -129,6 +259,10 @@ const validateAlbumFields = async ({
     releaseYear,
   };
 };
+
+// =====================================================
+// CREATE ALBUM
+// =====================================================
 
 const createAlbum = async (req, res) => {
   let uploadedCover = null;
@@ -146,7 +280,11 @@ const createAlbum = async (req, res) => {
     let coverUrl = null;
 
     if (req.file) {
-      uploadedCover = await uploadToS3(req.file, "covers");
+      uploadedCover = await uploadToS3(
+        req.file,
+        "covers"
+      );
+
       coverUrl = uploadedCover.cloudFrontUrl;
     }
 
@@ -180,13 +318,18 @@ const createAlbum = async (req, res) => {
       message: "Album created successfully.",
       album: result.rows[0],
     });
+
   } catch (error) {
     console.error("Create album error:", error);
 
     if (uploadedCover?.key) {
-      await deleteManagedS3Object(uploadedCover.key).catch(
-        (cleanupError) =>
-          console.error("New album cover cleanup error:", cleanupError)
+      await deleteManagedS3Object(
+        uploadedCover.key
+      ).catch((cleanupError) =>
+        console.error(
+          "New album cover cleanup error:",
+          cleanupError
+        )
       );
     }
 
@@ -196,6 +339,10 @@ const createAlbum = async (req, res) => {
     });
   }
 };
+
+// =====================================================
+// UPDATE ALBUM
+// =====================================================
 
 const updateAlbum = async (req, res) => {
   let uploadedCover = null;
@@ -211,7 +358,11 @@ const updateAlbum = async (req, res) => {
     }
 
     const existing = await pool.query(
-      `SELECT * FROM public.albums WHERE id = $1`,
+      `
+      SELECT *
+      FROM public.albums
+      WHERE id = $1
+      `,
       [id]
     );
 
@@ -222,7 +373,38 @@ const updateAlbum = async (req, res) => {
       });
     }
 
-    const fields = await validateAlbumFields(req.body);
+    const oldAlbum = existing.rows[0];
+
+    const validationPayload = {
+      title_english:
+        req.body.title_english ??
+        req.body.english_title ??
+        oldAlbum.title_english,
+
+      title_telugu:
+        req.body.title_telugu ??
+        req.body.telugu_title ??
+        oldAlbum.title_telugu,
+
+      title: req.body.title ?? oldAlbum.title,
+
+      language:
+        req.body.language ?? oldAlbum.language,
+
+      artist_id:
+        req.body.artist_id !== undefined
+          ? req.body.artist_id
+          : oldAlbum.artist_id,
+
+      release_year:
+        req.body.release_year !== undefined
+          ? req.body.release_year
+          : oldAlbum.release_year,
+    };
+
+    const fields = await validateAlbumFields(
+      validationPayload
+    );
 
     if (fields.error) {
       return res.status(400).json({
@@ -231,11 +413,14 @@ const updateAlbum = async (req, res) => {
       });
     }
 
-    const oldAlbum = existing.rows[0];
     let coverUrl = oldAlbum.cover_url;
 
     if (req.file) {
-      uploadedCover = await uploadToS3(req.file, "covers");
+      uploadedCover = await uploadToS3(
+        req.file,
+        "covers"
+      );
+
       coverUrl = uploadedCover.cloudFrontUrl;
     }
 
@@ -270,8 +455,13 @@ const updateAlbum = async (req, res) => {
       oldAlbum.cover_url &&
       oldAlbum.cover_url !== coverUrl
     ) {
-      await deleteManagedS3Object(oldAlbum.cover_url).catch(
-        (error) => console.error("Old album cover cleanup error:", error)
+      await deleteManagedS3Object(
+        oldAlbum.cover_url
+      ).catch((error) =>
+        console.error(
+          "Old album cover cleanup error:",
+          error
+        )
       );
     }
 
@@ -280,13 +470,18 @@ const updateAlbum = async (req, res) => {
       message: "Album updated successfully.",
       album: result.rows[0],
     });
+
   } catch (error) {
     console.error("Update album error:", error);
 
     if (uploadedCover?.key) {
-      await deleteManagedS3Object(uploadedCover.key).catch(
-        (cleanupError) =>
-          console.error("New album cover cleanup error:", cleanupError)
+      await deleteManagedS3Object(
+        uploadedCover.key
+      ).catch((cleanupError) =>
+        console.error(
+          "New album cover cleanup error:",
+          cleanupError
+        )
       );
     }
 
@@ -296,6 +491,10 @@ const updateAlbum = async (req, res) => {
     });
   }
 };
+
+// =====================================================
+// DELETE ALBUM
+// =====================================================
 
 const deleteAlbum = async (req, res) => {
   try {
@@ -309,7 +508,11 @@ const deleteAlbum = async (req, res) => {
     }
 
     const existing = await pool.query(
-      `SELECT id, cover_url FROM public.albums WHERE id = $1`,
+      `
+      SELECT id, cover_url
+      FROM public.albums
+      WHERE id = $1
+      `,
       [id]
     );
 
@@ -332,18 +535,27 @@ const deleteAlbum = async (req, res) => {
     if (songResult.rows[0].count > 0) {
       return res.status(409).json({
         success: false,
-        message: "Cannot delete this album because songs are assigned to it.",
+        message:
+          "Cannot delete this album because songs are assigned to it.",
       });
     }
 
     await pool.query(
-      `DELETE FROM public.albums WHERE id = $1`,
+      `
+      DELETE FROM public.albums
+      WHERE id = $1
+      `,
       [id]
     );
 
     if (existing.rows[0].cover_url) {
-      await deleteManagedS3Object(existing.rows[0].cover_url).catch(
-        (error) => console.error("Album cover cleanup error:", error)
+      await deleteManagedS3Object(
+        existing.rows[0].cover_url
+      ).catch((error) =>
+        console.error(
+          "Album cover cleanup error:",
+          error
+        )
       );
     }
 
@@ -351,14 +563,20 @@ const deleteAlbum = async (req, res) => {
       success: true,
       message: "Album deleted successfully.",
     });
+
   } catch (error) {
     console.error("Delete album error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Unable to delete album.",
     });
   }
 };
+
+// =====================================================
+// EXPORTS
+// =====================================================
 
 module.exports = {
   getAlbums,
