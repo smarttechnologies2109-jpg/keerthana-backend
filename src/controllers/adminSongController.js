@@ -933,13 +933,19 @@ const updateSong = async (req, res) => {
 
     const existingSong = existingResult.rows[0];
 
-    // 2. Validate title
-    if (typeof title !== "string" || !title.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: "Song title is required",
-      });
-    }
+ // NEW CODE — SUPPORT PARTIAL UPDATES
+
+const updatedTitle =
+  title === undefined
+    ? existingSong.title
+    : String(title).trim();
+
+if (!updatedTitle) {
+  return res.status(400).json({
+    success: false,
+    message: "Song title is required",
+  });
+}
 
     // 3. Validate moods
     let songMoods;
@@ -1109,7 +1115,7 @@ const updateSong = async (req, res) => {
       RETURNING *
       `,
       [
-        title.trim(),
+       updatedTitle,
         title_english === undefined
           ? existingSong.title_english
           : String(title_english).trim() || null,
