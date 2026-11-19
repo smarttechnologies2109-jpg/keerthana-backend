@@ -454,6 +454,9 @@ const getAdminSongs = async (req, res) => {
         s.ministry_id,
         m.name AS ministry_name
 
+        m.name AS ministry_name,
+        m.name_english AS ministry_name_english
+
       FROM songs s
 
       LEFT JOIN artists ar

@@ -41,15 +41,20 @@ const storage = multer.memoryStorage();
 
 const allowedTypes = {
   // Song audio
-  audio: {
-    mime: [
-      "audio/mpeg",
-      "audio/mp3",
-      "audio/x-m4a",
-      "audio/mp4",
-    ],
-    extensions: [".mp3", ".m4a", ".mp4"],
-  },
+
+audio: {
+  mime: [
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/x-m4a",
+    "audio/mp4",
+    "video/mp4",
+    "application/mp4",
+    "application/octet-stream",
+  ],
+  extensions: [".mp3", ".m4a", ".mp4"],
+},
+
 
   // Song cover images
   cover: {
@@ -145,6 +150,7 @@ const profileUpload = multer({
 // CONTENT TYPE
 // =====================================================
 
+
 const getContentType = (extension, fallback) => {
   const types = {
     ".mp3": "audio/mpeg",
@@ -160,6 +166,7 @@ const getContentType = (extension, fallback) => {
 
   return types[extension] || fallback || "application/octet-stream";
 };
+
 
 // =====================================================
 // CLOUDFRONT URL
