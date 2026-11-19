@@ -130,17 +130,15 @@ const validateMood = (value) => {
 };
 
 
+
 /* =========================================
    GET ALL SONGS
+   Includes Artist, Album, Ministry & Category
 ========================================= */
 
 const getAllSongs = async (req, res) => {
-
   try {
-
-    const userLanguage =
-      getUserLanguage(req);
-
+    const userLanguage = getUserLanguage(req);
 
     let query = `
       SELECT
@@ -156,70 +154,75 @@ const getAllSongs = async (req, res) => {
         s.moods,
         s.created_at,
 
-        ar.id AS artist_id,
+        /* ARTIST */
+        s.artist_id,
         ar.name AS artist_name,
+        NULLIF(BTRIM(ar.name_english), '') AS artist_name_english,
         ar.image_url AS artist_image,
 
-        al.id AS album_id,
+        /* ALBUM */
+        s.album_id,
         al.title AS album_title,
+        NULLIF(BTRIM(al.title_english), '') AS album_name_english,
         al.cover_url AS album_cover,
 
-        c.id AS category_id,
-        c.name AS category_name
+        /* MINISTRY */
+        s.ministry_id,
+        COALESCE(
+          NULLIF(BTRIM(m.name_english), ''),
+          NULLIF(BTRIM(m.name), '')
+        ) AS ministry_name_english,
+        COALESCE(
+          NULLIF(BTRIM(m.name), ''),
+          NULLIF(BTRIM(m.name_english), '')
+        ) AS ministry_name,
 
-      FROM songs s
+        /* CATEGORY */
+        s.category_id,
+        c.name AS category_name,
+        COALESCE(
+          NULLIF(BTRIM(c.name_english), ''),
+          NULLIF(BTRIM(c.name), '')
+        ) AS category_name_english
 
-      LEFT JOIN artists ar
+      FROM public.songs s
+
+      LEFT JOIN public.artists ar
         ON s.artist_id = ar.id
 
-      LEFT JOIN albums al
+      LEFT JOIN public.albums al
         ON s.album_id = al.id
 
-      LEFT JOIN categories c
+      LEFT JOIN public.ministries m
+        ON s.ministry_id = m.id
+
+      LEFT JOIN public.categories c
         ON s.category_id = c.id
     `;
 
-
     const values = [];
 
-
     if (userLanguage) {
-
       values.push(userLanguage);
-
-      query += `
-        WHERE s.language = $1
-      `;
+      query += ` WHERE s.language = $1`;
     }
-
 
     query += `
       ORDER BY
-        s.created_at DESC,
+        s.created_at DESC NULLS LAST,
         s.id DESC
     `;
 
+    const result = await pool.query(query, values);
 
-    const result =
-      await pool.query(
-        query,
-        values
-      );
-
-
- return res.status(200).json({
-  success: true,
-  count: result.rows.length,
-  songs: result.rows.map(transformSongMedia),
-});
+    return res.status(200).json({
+      success: true,
+      count: result.rows.length,
+      songs: result.rows.map(transformSongMedia),
+    });
 
   } catch (error) {
-
-    console.error(
-      "Get songs error:",
-      error
-    );
-
+    console.error("Get songs error:", error);
 
     return res.status(500).json({
       success: false,
