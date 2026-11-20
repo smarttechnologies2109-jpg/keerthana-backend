@@ -1,3 +1,4 @@
+
 const pool = require("../config/db");
 const crypto = require("crypto");
 
@@ -6,69 +7,38 @@ const {
   DeleteObjectCommand,
 } = require("@aws-sdk/client-s3");
 
+const { uploadToS3 } = require("../middleware/s3Upload");
 
 const getAudioSha256 = (audioFile) => {
   if (!audioFile?.buffer || !Buffer.isBuffer(audioFile.buffer)) {
-    throw new Error(
-      "Unable to calculate audio hash: uploaded audio buffer is missing."
-    );
+    throw new Error("Uploaded audio buffer is missing.");
   }
 
-  return crypto
-    .createHash("sha256")
+  return crypto.createHash("sha256")
     .update(audioFile.buffer)
     .digest("hex");
 };
 
-const {
-  uploadToS3,
-} = require("../middleware/s3Upload");
-
-/* =========================================================
-   AWS S3 CONFIGURATION
-========================================================= */
-
-const AWS_REGION =
-  process.env.AWS_REGION || "ap-south-1";
-
+const AWS_REGION = process.env.AWS_REGION || "ap-south-1";
 const BUCKET_NAME =
-  process.env.S3_BUCKET_NAME ||
-  "keerthana-media-908209635187";
+  process.env.S3_BUCKET_NAME || "keerthana-media-908209635187";
 
-const s3 = new S3Client({
-  region: AWS_REGION,
-});
-
-/* =========================================================
-   CONSTANTS
-========================================================= */
+const s3 = new S3Client({ region: AWS_REGION });
 
 const ALLOWED_LANGUAGES = [
-  "Telugu",
-  "Hindi",
-  "English",
-  "Malayalam",
-  "Kannada",
-  "Tamil",
+  "Telugu", "Hindi", "English",
+  "Malayalam", "Kannada", "Tamil",
 ];
 
 const ALLOWED_MOODS = [
-  "worship",
-  "praise",
-  "prayer",
-  "hope",
-  "peace",
-  "thanksgiving",
+  "worship", "praise", "prayer",
+  "hope", "peace", "thanksgiving",
 ];
 
 /* =========================================================
    COMMON HELPERS
 ========================================================= */
 
-/**
- * Convert FormData values to a boolean.
- * Preserves support for multipart/form-data.
- */
 const parseBoolean = (value, fallback = false) => {
   if (value === undefined || value === null || value === "") {
     return fallback;
@@ -82,19 +52,8 @@ const parseBoolean = (value, fallback = false) => {
   );
 };
 
-/**
- * Convert optional relationship IDs to positive integers
- * or null when the field is intentionally cleared.
- *
- * If the field is omitted during an update, its existing
- * database value is preserved by the caller.
- */
 const parseOptionalId = (value, fieldName) => {
-  if (
-    value === undefined ||
-    value === null ||
-    value === ""
-  ) {
+  if (value === undefined || value === null || value === "") {
     return null;
   }
 
@@ -107,14 +66,85 @@ const parseOptionalId = (value, fieldName) => {
   return parsed;
 };
 
-/**
- * Normalize moods consistently for both create and update.
- *
- * undefined: use fallback
- * null / empty string: clear moods
- * JSON string: parse FormData value
- * array: normalize, validate, and remove duplicates
- */
+/* =========================================================
+   MULTIPLE ARTIST HELPERS
+========================================================= */
+
+const parseArtistIds = (value, fallbackArtistId = null) => {
+  let ids = value;
+
+  if (ids === undefined) {
+    ids = fallbackArtistId ? [fallbackArtistId] : [];
+  } else if (typeof ids === "string") {
+    try {
+      ids = JSON.parse(ids);
+    } catch {
+      throw new Error("artist_ids must be a valid JSON array");
+    }
+  }
+
+  if (!Array.isArray(ids)) {
+    throw new Error("artist_ids must be an array");
+  }
+
+  const parsed = ids.map((id) => {
+    const artistId = Number(id);
+
+    if (!Number.isInteger(artistId) || artistId <= 0) {
+      throw new Error("Invalid artist ID in artist_ids");
+    }
+
+    return artistId;
+  });
+
+  return [...new Set(parsed)];
+};
+
+const validateArtistIds = async (client, artistIds) => {
+  if (!artistIds.length) {
+    throw new Error("At least one artist is required");
+  }
+
+  const result = await client.query(
+    `SELECT id FROM artists WHERE id = ANY($1::bigint[])`,
+    [artistIds]
+  );
+
+  const found = new Set(
+    result.rows.map((row) => Number(row.id))
+  );
+
+  const missing = artistIds.filter((id) => !found.has(id));
+
+  if (missing.length) {
+    throw new Error(
+      `Selected artist(s) do not exist: ${missing.join(", ")}`
+    );
+  }
+};
+
+const syncSongArtists = async (client, songId, artistIds) => {
+  await client.query(
+    `DELETE FROM song_artists WHERE song_id = $1`,
+    [songId]
+  );
+
+  for (const artistId of artistIds) {
+    await client.query(
+      `
+      INSERT INTO song_artists (song_id, artist_id)
+      VALUES ($1, $2)
+      ON CONFLICT (song_id, artist_id) DO NOTHING
+      `,
+      [songId, artistId]
+    );
+  }
+};
+
+/* =========================================================
+   MOOD HELPER
+========================================================= */
+
 const parseSongMoods = (value, fallback = []) => {
   if (value === undefined) {
     return Array.isArray(fallback) ? fallback : [];
@@ -146,11 +176,7 @@ const parseSongMoods = (value, fallback = []) => {
     ),
   ];
 
-  if (
-    normalized.some(
-      (mood) => !ALLOWED_MOODS.includes(mood)
-    )
-  ) {
+  if (normalized.some((mood) => !ALLOWED_MOODS.includes(mood))) {
     throw new Error(
       `Invalid mood selected. Allowed moods: ${ALLOWED_MOODS.join(", ")}`
     );
@@ -159,13 +185,10 @@ const parseSongMoods = (value, fallback = []) => {
   return normalized;
 };
 
-/**
- * Convert the existing uploadToS3 return value into a URL.
- *
- * Prefer the URL returned by the existing middleware.
- * Fall back to an S3 URL only when the middleware returns
- * an object key.
- */
+/* =========================================================
+   S3 HELPERS
+========================================================= */
+
 const getS3Url = (result) => {
   if (!result) return null;
 
@@ -174,14 +197,11 @@ const getS3Url = (result) => {
   }
 
   if (result.key) {
-    return (
-      process.env.CLOUDFRONT_URL?.replace(/\/+$/, "") +
-      "/" +
-      result.key
-        .split("/")
-        .map(encodeURIComponent)
-        .join("/")
-    );
+    const base = process.env.CLOUDFRONT_URL?.replace(/\/+$/, "");
+
+    return base
+      ? `${base}/${result.key.split("/").map(encodeURIComponent).join("/")}`
+      : null;
   }
 
   return (
@@ -193,14 +213,8 @@ const getS3Url = (result) => {
   );
 };
 
-/**
- * Find the S3 key returned by uploadToS3.
- * Used for cleanup if the database operation fails.
- */
 const getS3KeyFromUpload = (uploadResult) => {
-  if (!uploadResult) {
-    return null;
-  }
+  if (!uploadResult) return null;
 
   if (uploadResult.key) {
     return String(uploadResult.key).replace(/^\/+/, "");
@@ -222,32 +236,23 @@ const getS3KeyFromUpload = (uploadResult) => {
     const isS3Url =
       url.hostname === `${BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com` ||
       url.hostname === `${BUCKET_NAME}.s3.amazonaws.com` ||
-      url.hostname.endsWith(".amazonaws.com") &&
-        url.hostname.startsWith(`${BUCKET_NAME}.`);
+      (
+        url.hostname.endsWith(".amazonaws.com") &&
+        url.hostname.startsWith(`${BUCKET_NAME}.`)
+      );
 
-    if (!isS3Url) {
-      // Do not assume a CloudFront or unrelated URL path
-      // is a direct S3 object key during rollback.
-      return null;
-    }
+    if (!isS3Url) return null;
 
-    return decodeURIComponent(
-      url.pathname.replace(/^\/+/, "")
-    );
+    return decodeURIComponent(url.pathname.replace(/^\/+/, ""));
   } catch {
     return null;
   }
 };
 
-/**
- * Delete a newly uploaded object directly by its known key.
- */
 const deleteUploadedObject = async (uploadResult) => {
   const key = getS3KeyFromUpload(uploadResult);
 
-  if (!key) {
-    return;
-  }
+  if (!key) return;
 
   await s3.send(
     new DeleteObjectCommand({
@@ -259,17 +264,6 @@ const deleteUploadedObject = async (uploadResult) => {
   console.log("Rolled back uploaded S3 object:", key);
 };
 
-/**
- * Extract keys from the media URL formats currently used
- * by the application.
- *
- * Supported:
- *   /media/audio/file.mp3
- *   /media/images/file.jpg
- *   /audio/file.mp3
- *   /covers/file.jpg
- *   direct S3 URLs for this configured bucket
- */
 const getS3KeyFromMediaUrl = (mediaUrl) => {
   if (!mediaUrl || typeof mediaUrl !== "string") {
     return null;
@@ -293,9 +287,7 @@ const getS3KeyFromMediaUrl = (mediaUrl) => {
         );
 
       if (isS3Url) {
-        return decodeURIComponent(
-          pathname.replace(/^\/+/, "")
-        ) || null;
+        return decodeURIComponent(pathname.replace(/^\/+/, "")) || null;
       }
     } catch {
       return null;
@@ -305,7 +297,7 @@ const getS3KeyFromMediaUrl = (mediaUrl) => {
   try {
     pathname = decodeURIComponent(pathname);
   } catch {
-    // Keep the original pathname if decoding fails.
+    // Keep original path.
   }
 
   const normalizedPath = pathname.replace(/^\/+/, "");
@@ -317,36 +309,27 @@ const getS3KeyFromMediaUrl = (mediaUrl) => {
     /^covers\/(.+)$/,
   ];
 
-  for (const pattern of patterns) {
-    const match = normalizedPath.match(pattern);
+  for (let index = 0; index < patterns.length; index++) {
+    const match = normalizedPath.match(patterns[index]);
 
     if (match) {
-      const relativeKey = match[1];
-
-      if (pattern === patterns[0] || pattern === patterns[2]) {
-        return `audio/${relativeKey}`;
-      }
-
-      return `covers/${relativeKey}`;
+      return index === 0 || index === 2
+        ? `audio/${match[1]}`
+        : `covers/${match[1]}`;
     }
   }
 
-  // Unknown URL format: do not risk deleting an unrelated object.
   return null;
 };
 
-/**
- * Delete a media URL from S3 if its key can be identified.
- */
 const deleteS3Object = async (mediaUrl) => {
   const key = getS3KeyFromMediaUrl(mediaUrl);
 
   if (!key) {
     console.warn(
-      "Unable to identify S3 key; skipping media deletion:",
+      "Unable to identify S3 key; skipping deletion:",
       mediaUrl
     );
-
     return;
   }
 
@@ -360,58 +343,52 @@ const deleteS3Object = async (mediaUrl) => {
   console.log("S3 object deleted:", key);
 };
 
-/**
- * Delete media only when no song record still references it.
- */
 const deleteMediaIfUnused = async (mediaUrl) => {
-  if (!mediaUrl) {
-    return;
-  }
+  if (!mediaUrl) return;
 
   try {
     const result = await pool.query(
       `
       SELECT 1
       FROM songs
-      WHERE audio_url = $1
-         OR cover_url = $1
+      WHERE audio_url = $1 OR cover_url = $1
       LIMIT 1
       `,
       [mediaUrl]
     );
 
     if (result.rows.length > 0) {
-      console.log(
-        "Media still in use; keeping:",
-        mediaUrl
-      );
-
+      console.log("Media still in use; keeping:", mediaUrl);
       return;
     }
 
     await deleteS3Object(mediaUrl);
   } catch (error) {
-    // Media cleanup must not turn a successful song update
-    // or deletion into a failed API response.
     console.error("S3 media cleanup failed:", error.message);
   }
 };
 
-/**
- * Check whether a referenced record exists.
- * A null ID means that relationship is optional.
- */
+/* =========================================================
+   REFERENCE VALIDATION
+========================================================= */
+
 const validateOptionalReference = async (
   tableName,
   id,
   fieldName
 ) => {
-  if (id === null) {
-    return;
+  if (id === null) return;
+
+  const allowedTables = [
+    "albums",
+    "categories",
+    "ministries",
+  ];
+
+  if (!allowedTables.includes(tableName)) {
+    throw new Error("Invalid reference table");
   }
 
-  // Table names are supplied only by this controller's
-  // fixed internal calls, never by request input.
   const result = await pool.query(
     `SELECT id FROM ${tableName} WHERE id = $1 LIMIT 1`,
     [id]
@@ -444,36 +421,55 @@ const getAdminSongs = async (req, res) => {
 
         s.artist_id,
         ar.name AS artist_name,
+        ar.name_english AS artist_name_english,
+        ar.name_telugu AS artist_name_telugu,
+
+        COALESCE(
+          (
+            SELECT json_agg(
+              json_build_object(
+                'id', artist.id,
+                'name', artist.name,
+                'name_english', artist.name_english,
+                'name_telugu', artist.name_telugu
+              )
+              ORDER BY
+                CASE WHEN sa.artist_id = s.artist_id THEN 0 ELSE 1 END,
+                artist.name_english NULLS LAST,
+                artist.name
+            )
+            FROM song_artists sa
+            JOIN artists artist ON artist.id = sa.artist_id
+            WHERE sa.song_id = s.id
+          ),
+          CASE
+            WHEN ar.id IS NOT NULL THEN json_build_array(
+              json_build_object(
+                'id', ar.id,
+                'name', ar.name,
+                'name_english', ar.name_english,
+                'name_telugu', ar.name_telugu
+              )
+            )
+            ELSE '[]'::json
+          END
+        ) AS artists,
 
         s.album_id,
         al.title AS album_title,
-
         s.category_id,
         c.name AS category_name,
-
         s.ministry_id,
-        m.name AS ministry_name
-
         m.name AS ministry_name,
         m.name_english AS ministry_name_english
 
       FROM songs s
+      LEFT JOIN artists ar ON s.artist_id = ar.id
+      LEFT JOIN albums al ON s.album_id = al.id
+      LEFT JOIN categories c ON s.category_id = c.id
+      LEFT JOIN ministries m ON s.ministry_id = m.id
 
-      LEFT JOIN artists ar
-        ON s.artist_id = ar.id
-
-      LEFT JOIN albums al
-        ON s.album_id = al.id
-
-      LEFT JOIN categories c
-        ON s.category_id = c.id
-
-      LEFT JOIN ministries m
-        ON s.ministry_id = m.id
-
-      ORDER BY
-        s.created_at DESC,
-        s.id DESC
+      ORDER BY s.created_at DESC, s.id DESC
     `);
 
     return res.status(200).json({
@@ -492,18 +488,14 @@ const getAdminSongs = async (req, res) => {
 };
 
 /* =========================================================
-   CREATE SONG
-========================================================= */
-
-
-/* =========================================================
-   CREATE SONG - WITH DUPLICATE AUDIO CHECK
+   CREATE SONG - MULTIPLE ARTISTS
 ========================================================= */
 
 const createSong = async (req, res) => {
   let uploadedAudio = null;
   let uploadedCover = null;
   let databaseSaved = false;
+  let client = null;
 
   try {
     const {
@@ -512,6 +504,7 @@ const createSong = async (req, res) => {
       language = "Telugu",
       lyrics = "",
       artist_id,
+      artist_ids,
       album_id,
       category_id,
       ministry_id,
@@ -519,7 +512,6 @@ const createSong = async (req, res) => {
       moods = [],
     } = req.body || {};
 
-    // 1. Validate title
     if (!title || !String(title).trim()) {
       return res.status(400).json({
         success: false,
@@ -527,7 +519,6 @@ const createSong = async (req, res) => {
       });
     }
 
-    // 2. Validate audio upload
     const audioFile = req.files?.audio?.[0];
 
     if (!audioFile) {
@@ -537,7 +528,6 @@ const createSong = async (req, res) => {
       });
     }
 
-    // 3. Validate language
     if (!ALLOWED_LANGUAGES.includes(language)) {
       return res.status(400).json({
         success: false,
@@ -546,27 +536,16 @@ const createSong = async (req, res) => {
       });
     }
 
-    // 4. Validate moods
     let songMoods;
-
-    try {
-      songMoods = parseSongMoods(moods, []);
-    } catch (error) {
-      return res.status(400).json({
-        success: false,
-        message: error.message,
-        allowedMoods: ALLOWED_MOODS,
-      });
-    }
-
-    // 5. Validate optional relationship IDs
-    let artistId;
+    let artistIds;
     let albumId;
     let categoryId;
     let ministryId;
 
     try {
-      artistId = parseOptionalId(artist_id, "artist_id");
+      songMoods = parseSongMoods(moods, []);
+      artistIds = parseArtistIds(artist_ids, artist_id);
+
       albumId = parseOptionalId(album_id, "album_id");
       categoryId = parseOptionalId(category_id, "category_id");
       ministryId = parseOptionalId(ministry_id, "ministry_id");
@@ -576,33 +555,56 @@ const createSong = async (req, res) => {
         message: error.message,
       });
     }
-const audioSha256 = getAudioSha256(audioFile);
 
-const duplicateResult = await pool.query(
-  `SELECT id, title, title_english, language
-   FROM songs
-   WHERE audio_sha256 = $1
-   LIMIT 1`,
-  [audioSha256]
-);
+    if (!artistIds.length) {
+      return res.status(400).json({
+        success: false,
+        message: "At least one artist is required",
+      });
+    }
 
-if (duplicateResult.rows.length > 0) {
-  return res.status(409).json({
-    success: false,
-    code: "DUPLICATE_AUDIO",
-    message: "This audio file already exists in your songs.",
-    existingSong: duplicateResult.rows[0],
-  });
-}
+    // First selected artist is the primary artist.
+    const artistId = artistIds[0];
 
-    // 8. Upload audio only after the duplicate check
+    // Duplicate audio validation.
+    const audioSha256 = getAudioSha256(audioFile);
+
+    const duplicateResult = await pool.query(
+      `
+      SELECT id, title, title_english, language
+      FROM songs
+      WHERE audio_sha256 = $1
+      LIMIT 1
+      `,
+      [audioSha256]
+    );
+
+    if (duplicateResult.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        code: "DUPLICATE_AUDIO",
+        message: "This audio file already exists in your songs.",
+        existingSong: duplicateResult.rows[0],
+      });
+    }
+
+    // Validate references before uploading files.
+    client = await pool.connect();
+
+    await validateArtistIds(client, artistIds);
+
+    await validateOptionalReference("albums", albumId, "album");
+    await validateOptionalReference("categories", categoryId, "category");
+    await validateOptionalReference("ministries", ministryId, "ministry");
+
+    // Upload audio.
     uploadedAudio = await uploadToS3(audioFile, "audio");
 
     if (!uploadedAudio) {
       throw new Error("Audio upload did not return a result");
     }
 
-    // 9. Upload optional cover image
+    // Upload optional cover.
     const coverFile = req.files?.cover?.[0];
 
     if (coverFile) {
@@ -613,26 +615,23 @@ if (duplicateResult.rows.length > 0) {
       }
     }
 
-    // 10. Resolve uploaded media URLs
     const audioUrl = getS3Url(uploadedAudio);
     const coverUrl = coverFile ? getS3Url(uploadedCover) : null;
 
     if (!audioUrl) {
-      throw new Error(
-        "Audio uploaded but no audio URL was returned. Check uploadMiddleware.js."
-      );
+      throw new Error("Audio URL was not returned by S3 upload.");
     }
 
     if (coverFile && !coverUrl) {
-      throw new Error(
-        "Cover uploaded but no cover URL was returned."
-      );
+      throw new Error("Cover URL was not returned by S3 upload.");
     }
 
     const createdBy = req.user?.id || null;
 
-    // 11. Save song and its SHA-256 hash
-    const result = await pool.query(
+    await client.query("BEGIN");
+
+    // Insert the song.
+    const result = await client.query(
       `
       INSERT INTO songs (
         title,
@@ -674,14 +673,38 @@ if (duplicateResult.rows.length > 0) {
       ]
     );
 
+    const song = result.rows[0];
+
+    // Save every selected artist.
+    for (const selectedArtistId of artistIds) {
+      await client.query(
+        `
+        INSERT INTO song_artists (song_id, artist_id)
+        VALUES ($1, $2)
+        ON CONFLICT (song_id, artist_id) DO NOTHING
+        `,
+        [song.id, selectedArtistId]
+      );
+    }
+
+    await client.query("COMMIT");
+
     databaseSaved = true;
 
     return res.status(201).json({
       success: true,
       message: "Song uploaded successfully",
-      song: result.rows[0],
+      song: {
+        ...song,
+        artist_ids: artistIds,
+      },
     });
+
   } catch (error) {
+    if (client) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
+
     console.error("Create song error:", {
       message: error.message,
       code: error.code,
@@ -689,7 +712,7 @@ if (duplicateResult.rows.length > 0) {
       constraint: error.constraint,
     });
 
-    // Roll back new S3 uploads if the database insert failed.
+    // Clean up newly uploaded files if DB save failed.
     if (!databaseSaved) {
       if (uploadedAudio) {
         await deleteUploadedObject(uploadedAudio).catch(
@@ -714,7 +737,6 @@ if (duplicateResult.rows.length > 0) {
       }
     }
 
-    // Handle PostgreSQL unique-index duplicate errors.
     if (
       error.code === "23505" &&
       error.constraint === "songs_audio_sha256_unique"
@@ -748,6 +770,16 @@ if (duplicateResult.rows.length > 0) {
       });
     }
 
+    if (
+      error.message?.includes("artist") ||
+      error.message?.includes("Artist")
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
     return res.status(500).json({
       success: false,
       message: "Unable to upload song",
@@ -756,9 +788,11 @@ if (duplicateResult.rows.length > 0) {
         code: error.code || null,
       }),
     });
+
+  } finally {
+    if (client) client.release();
   }
 };
-
 
 /* =========================================================
    DELETE SONG
@@ -791,6 +825,8 @@ const deleteSong = async (req, res) => {
       [id]
     );
 
+    // song_artists records are deleted automatically
+    // because song_id has ON DELETE CASCADE.
     await deleteMediaIfUnused(song.audio_url);
     await deleteMediaIfUnused(song.cover_url);
 
@@ -798,6 +834,7 @@ const deleteSong = async (req, res) => {
       success: true,
       message: "Song deleted successfully",
     });
+
   } catch (error) {
     console.error("Delete song error:", error);
 
@@ -841,29 +878,53 @@ const getAdminSongById = async (req, res) => {
 
         s.artist_id,
         ar.name AS artist_name,
+        ar.name_english AS artist_name_english,
+        ar.name_telugu AS artist_name_telugu,
+
+        COALESCE(
+          (
+            SELECT json_agg(
+              json_build_object(
+                'id', artist.id,
+                'name', artist.name,
+                'name_english', artist.name_english,
+                'name_telugu', artist.name_telugu
+              )
+              ORDER BY
+                CASE WHEN sa.artist_id = s.artist_id THEN 0 ELSE 1 END,
+                artist.name_english NULLS LAST,
+                artist.name
+            )
+            FROM song_artists sa
+            JOIN artists artist ON artist.id = sa.artist_id
+            WHERE sa.song_id = s.id
+          ),
+          CASE
+            WHEN ar.id IS NOT NULL THEN json_build_array(
+              json_build_object(
+                'id', ar.id,
+                'name', ar.name,
+                'name_english', ar.name_english,
+                'name_telugu', ar.name_telugu
+              )
+            )
+            ELSE '[]'::json
+          END
+        ) AS artists,
 
         s.album_id,
         al.title AS album_title,
-
         s.category_id,
         c.name AS category_name,
-
         s.ministry_id,
         m.name AS ministry_name
 
       FROM songs s
 
-      LEFT JOIN artists ar
-        ON s.artist_id = ar.id
-
-      LEFT JOIN albums al
-        ON s.album_id = al.id
-
-      LEFT JOIN categories c
-        ON s.category_id = c.id
-
-      LEFT JOIN ministries m
-        ON s.ministry_id = m.id
+      LEFT JOIN artists ar ON s.artist_id = ar.id
+      LEFT JOIN albums al ON s.album_id = al.id
+      LEFT JOIN categories c ON s.category_id = c.id
+      LEFT JOIN ministries m ON s.ministry_id = m.id
 
       WHERE s.id = $1
       `,
@@ -881,6 +942,7 @@ const getAdminSongById = async (req, res) => {
       success: true,
       song: result.rows[0],
     });
+
   } catch (error) {
     console.error("Get admin song error:", error);
 
@@ -892,18 +954,14 @@ const getAdminSongById = async (req, res) => {
 };
 
 /* =========================================================
-   UPDATE SONG
-========================================================= */
-
-
-/* =========================================================
-   UPDATE SONG - WITH DUPLICATE AUDIO CHECK
+   UPDATE SONG - MULTIPLE ARTISTS
 ========================================================= */
 
 const updateSong = async (req, res) => {
   let uploadedAudio = null;
   let uploadedCover = null;
   let databaseUpdated = false;
+  let client = null;
 
   try {
     const { id } = req.params;
@@ -914,6 +972,7 @@ const updateSong = async (req, res) => {
       language,
       lyrics,
       artist_id,
+      artist_ids,
       album_id,
       category_id,
       ministry_id,
@@ -921,7 +980,7 @@ const updateSong = async (req, res) => {
       featured,
     } = req.body || {};
 
-    // 1. Load existing song
+    // Load existing song.
     const existingResult = await pool.query(
       `SELECT * FROM songs WHERE id = $1`,
       [id]
@@ -936,60 +995,29 @@ const updateSong = async (req, res) => {
 
     const existingSong = existingResult.rows[0];
 
- // NEW CODE — SUPPORT PARTIAL UPDATES
+    const updatedTitle =
+      title === undefined
+        ? existingSong.title
+        : String(title).trim();
 
-const updatedTitle =
-  title === undefined
-    ? existingSong.title
-    : String(title).trim();
+    if (!updatedTitle) {
+      return res.status(400).json({
+        success: false,
+        message: "Song title is required",
+      });
+    }
 
-if (!updatedTitle) {
-  return res.status(400).json({
-    success: false,
-    message: "Song title is required",
-  });
-}
-
-    // 3. Validate moods
     let songMoods;
+    let artistIds;
+    let albumId;
+    let categoryId;
+    let ministryId;
 
     try {
       songMoods = parseSongMoods(
         moods,
         existingSong.moods || []
       );
-    } catch (error) {
-      return res.status(400).json({
-        success: false,
-        message: error.message,
-        allowedMoods: ALLOWED_MOODS,
-      });
-    }
-
-    // 4. Validate language
-    const selectedLanguage = String(
-      language || existingSong.language || "Telugu"
-    ).trim();
-
-    if (!ALLOWED_LANGUAGES.includes(selectedLanguage)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid song language",
-        allowedLanguages: ALLOWED_LANGUAGES,
-      });
-    }
-
-    // 5. Preserve omitted relationships; allow explicit clearing
-    let artistId;
-    let albumId;
-    let categoryId;
-    let ministryId;
-
-    try {
-      artistId =
-        artist_id === undefined
-          ? existingSong.artist_id
-          : parseOptionalId(artist_id, "artist_id");
 
       albumId =
         album_id === undefined
@@ -1005,6 +1033,40 @@ if (!updatedTitle) {
         ministry_id === undefined
           ? existingSong.ministry_id
           : parseOptionalId(ministry_id, "ministry_id");
+
+      if (artist_ids !== undefined) {
+        artistIds = parseArtistIds(artist_ids);
+      } else if (artist_id !== undefined) {
+        const singleArtistId = parseOptionalId(
+          artist_id,
+          "artist_id"
+        );
+
+        artistIds = singleArtistId ? [singleArtistId] : [];
+      } else {
+        // Preserve all existing artists if artist fields
+        // are not included in the update request.
+        const existingArtistsResult = await pool.query(
+          `
+          SELECT artist_id
+          FROM song_artists
+          WHERE song_id = $1
+          ORDER BY
+            CASE WHEN artist_id = $2 THEN 0 ELSE 1 END,
+            id ASC
+          `,
+          [id, existingSong.artist_id]
+        );
+
+        artistIds = existingArtistsResult.rows.length
+          ? existingArtistsResult.rows.map(
+              (row) => Number(row.artist_id)
+            )
+          : existingSong.artist_id
+            ? [Number(existingSong.artist_id)]
+            : [];
+      }
+
     } catch (error) {
       return res.status(400).json({
         success: false,
@@ -1012,54 +1074,71 @@ if (!updatedTitle) {
       });
     }
 
-    // 6. Validate referenced records
-    try {
-      await validateOptionalReference("artists", artistId, "artist");
-      await validateOptionalReference("albums", albumId, "album");
-      await validateOptionalReference("categories", categoryId, "category");
-      await validateOptionalReference("ministries", ministryId, "ministry");
-    } catch (error) {
+    if (!artistIds.length) {
       return res.status(400).json({
         success: false,
-        message: error.message,
+        message: "At least one artist is required",
       });
     }
 
-    // 7. Check whether replacement files were supplied
+    // First selected artist is primary.
+    const artistId = artistIds[0];
+
+    const selectedLanguage = String(
+      language || existingSong.language || "Telugu"
+    ).trim();
+
+    if (!ALLOWED_LANGUAGES.includes(selectedLanguage)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid song language",
+        allowedLanguages: ALLOWED_LANGUAGES,
+      });
+    }
+
+    await validateOptionalReference("albums", albumId, "album");
+    await validateOptionalReference("categories", categoryId, "category");
+    await validateOptionalReference("ministries", ministryId, "ministry");
+
     const newAudioFile = req.files?.audio?.[0] || null;
     const newCoverFile = req.files?.cover?.[0] || null;
 
-    // Preserve the current hash if audio is not being replaced.
     let audioSha256 = existingSong.audio_sha256 || null;
 
+    // Check duplicate audio only if a replacement is uploaded.
     if (newAudioFile) {
-  audioSha256 = getAudioSha256(newAudioFile);
+      audioSha256 = getAudioSha256(newAudioFile);
 
-  const duplicateResult = await pool.query(
-    `SELECT id, title, title_english, language
-     FROM songs
-     WHERE audio_sha256 = $1
-       AND id <> $2
-     LIMIT 1`,
-    [audioSha256, id]
-  );
+      const duplicateResult = await pool.query(
+        `
+        SELECT id, title, title_english, language
+        FROM songs
+        WHERE audio_sha256 = $1
+          AND id <> $2
+        LIMIT 1
+        `,
+        [audioSha256, id]
+      );
 
-  if (duplicateResult.rows.length > 0) {
-    return res.status(409).json({
-      success: false,
-      code: "DUPLICATE_AUDIO",
-      message: "This audio file already exists in another song.",
-      existingSong: duplicateResult.rows[0],
-    });
-  }
-}
+      if (duplicateResult.rows.length > 0) {
+        return res.status(409).json({
+          success: false,
+          code: "DUPLICATE_AUDIO",
+          message: "This audio file already exists in another song.",
+          existingSong: duplicateResult.rows[0],
+        });
+      }
+    }
 
-    // 9. Preserve existing URLs unless replacements are uploaded
     let audioUrl = existingSong.audio_url;
     let coverUrl = existingSong.cover_url;
 
+    // Replace audio if supplied.
     if (newAudioFile) {
-      uploadedAudio = await uploadToS3(newAudioFile, "audio");
+      uploadedAudio = await uploadToS3(
+        newAudioFile,
+        "audio"
+      );
 
       if (!uploadedAudio) {
         throw new Error("Audio upload failed");
@@ -1069,13 +1148,17 @@ if (!updatedTitle) {
 
       if (!audioUrl) {
         throw new Error(
-          "Audio uploaded but no URL was returned by uploadMiddleware.js"
+          "Audio URL was not returned by S3 upload."
         );
       }
     }
 
+    // Replace cover if supplied.
     if (newCoverFile) {
-      uploadedCover = await uploadToS3(newCoverFile, "covers");
+      uploadedCover = await uploadToS3(
+        newCoverFile,
+        "covers"
+      );
 
       if (!uploadedCover) {
         throw new Error("Cover upload failed");
@@ -1085,19 +1168,24 @@ if (!updatedTitle) {
 
       if (!coverUrl) {
         throw new Error(
-          "Cover uploaded but no URL was returned by uploadMiddleware.js"
+          "Cover URL was not returned by S3 upload."
         );
       }
     }
 
-    // 10. Preserve featured value when omitted
     const isFeatured =
       featured === undefined
         ? existingSong.featured
         : parseBoolean(featured);
 
-    // 11. Update song and audio hash
-    const result = await pool.query(
+    client = await pool.connect();
+
+    await validateArtistIds(client, artistIds);
+
+    await client.query("BEGIN");
+
+    // Update the primary song record.
+    const result = await client.query(
       `
       UPDATE songs
       SET
@@ -1118,12 +1206,14 @@ if (!updatedTitle) {
       RETURNING *
       `,
       [
-       updatedTitle,
+        updatedTitle,
         title_english === undefined
           ? existingSong.title_english
           : String(title_english).trim() || null,
         selectedLanguage,
-        lyrics === undefined ? existingSong.lyrics : lyrics || "",
+        lyrics === undefined
+          ? existingSong.lyrics
+          : lyrics || "",
         audioUrl,
         audioSha256,
         coverUrl,
@@ -1137,10 +1227,14 @@ if (!updatedTitle) {
       ]
     );
 
+    // Replace all artist relationships.
+    await syncSongArtists(client, id, artistIds);
+
+    await client.query("COMMIT");
+
     databaseUpdated = true;
 
-    // 12. Remove replaced media only after successful DB update.
-    // The helper preserves objects still referenced by another song.
+    // Delete old media only after successful update.
     if (
       newAudioFile &&
       existingSong.audio_url &&
@@ -1160,9 +1254,17 @@ if (!updatedTitle) {
     return res.status(200).json({
       success: true,
       message: "Song updated successfully",
-      song: result.rows[0],
+      song: {
+        ...result.rows[0],
+        artist_ids: artistIds,
+      },
     });
+
   } catch (error) {
+    if (client) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
+
     console.error("Update song error:", {
       message: error.message,
       code: error.code,
@@ -1170,7 +1272,6 @@ if (!updatedTitle) {
       constraint: error.constraint,
     });
 
-    // Roll back new uploads if the database update failed.
     if (!databaseUpdated && uploadedAudio) {
       await deleteUploadedObject(uploadedAudio).catch(
         (cleanupError) => {
@@ -1193,7 +1294,6 @@ if (!updatedTitle) {
       );
     }
 
-    // Handle PostgreSQL unique-index duplicate errors.
     if (
       error.code === "23505" &&
       error.constraint === "songs_audio_sha256_unique"
@@ -1227,6 +1327,16 @@ if (!updatedTitle) {
       });
     }
 
+    if (
+      error.message?.includes("artist") ||
+      error.message?.includes("Artist")
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
     return res.status(500).json({
       success: false,
       message: "Unable to update song",
@@ -1235,9 +1345,11 @@ if (!updatedTitle) {
         code: error.code || null,
       }),
     });
+
+  } finally {
+    if (client) client.release();
   }
 };
-
 
 /* =========================================================
    GET ALL SONG REPORTS - ADMIN
@@ -1274,6 +1386,7 @@ const getAdminSongReports = async (req, res) => {
       count: result.rows.length,
       reports: result.rows,
     });
+
   } catch (error) {
     console.error("Admin get song reports error:", error);
 
@@ -1346,6 +1459,7 @@ const updateSongReportStatus = async (req, res) => {
       message: "Report status updated successfully",
       report: result.rows[0],
     });
+
   } catch (error) {
     console.error(
       "Admin update song report status error:",
@@ -1400,6 +1514,7 @@ const deleteSongReport = async (req, res) => {
       message: "Song report deleted successfully",
       report: result.rows[0],
     });
+
   } catch (error) {
     console.error(
       "Admin delete song report error:",
