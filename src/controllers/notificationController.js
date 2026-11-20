@@ -26,15 +26,31 @@ const getNotifications = async (req, res) => {
         n.song_id,
         n.album_id,
         n.ministry_id,
+
+        /* SONG TITLES */
+        s.title_english AS title_english,
+        s.title AS title_telugu,
+
         n.is_active,
         n.created_at,
+
         (un.read_at IS NOT NULL) AS is_read
+
       FROM notifications n
+
+      LEFT JOIN songs s
+        ON s.id = n.song_id
+
       LEFT JOIN user_notifications un
         ON un.notification_id = n.id
        AND un.user_id = $1
+
       WHERE n.is_active = TRUE
-      ORDER BY n.created_at DESC NULLS LAST, n.id DESC
+
+      ORDER BY
+        n.created_at DESC NULLS LAST,
+        n.id DESC
+
       LIMIT 100
       `,
       [userId]
@@ -51,8 +67,12 @@ const getNotifications = async (req, res) => {
       notifications,
       unreadCount,
     });
+
   } catch (error) {
-    console.error("Get notifications error:", error.message);
+    console.error(
+      "Get notifications error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -98,9 +118,11 @@ const markAsRead = async (req, res) => {
       FROM notifications n
       WHERE n.id = $2
         AND n.is_active = TRUE
+
       ON CONFLICT (user_id, notification_id)
       DO UPDATE SET read_at =
         COALESCE(user_notifications.read_at, NOW())
+
       RETURNING notification_id
       `,
       [userId, notificationId]
@@ -117,8 +139,12 @@ const markAsRead = async (req, res) => {
       success: true,
       message: "Notification marked as read",
     });
+
   } catch (error) {
-    console.error("Mark notification read error:", error.message);
+    console.error(
+      "Mark notification read error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -152,6 +178,7 @@ const markAllAsRead = async (req, res) => {
       SELECT $1, n.id, NOW()
       FROM notifications n
       WHERE n.is_active = TRUE
+
       ON CONFLICT (user_id, notification_id)
       DO UPDATE SET read_at =
         COALESCE(user_notifications.read_at, NOW())
@@ -163,8 +190,12 @@ const markAllAsRead = async (req, res) => {
       success: true,
       message: "All notifications marked as read",
     });
+
   } catch (error) {
-    console.error("Mark all notifications read error:", error.message);
+    console.error(
+      "Mark all notifications read error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
