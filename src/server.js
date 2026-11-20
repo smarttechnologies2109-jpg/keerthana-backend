@@ -75,6 +75,8 @@ const songReportRoutes = require("./routes/songReportRoutes");
 
 const notificationRoutes = require("./routes/notificationRoutes");
 
+const rewardRoutes = require("./routes/rewardRoutes");
+
 
 const ownerMusicRoutes =
   require("./routes/ownerMusicRoutes");
@@ -1031,7 +1033,7 @@ app.use(
   ownerMusicRoutes
 );
 
-
+app.use("/api/rewards", rewardRoutes);
 
 app.use("/api/moods", moodsRoutes);
 // =========================================================
