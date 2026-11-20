@@ -9,28 +9,31 @@ const {
   handleAdMobSSV,
 } = require("../controllers/rewardController");
 
-// IMPORTANT:
-// Replace this import with your existing authentication middleware.
-// Use the middleware that sets req.user.id.
+// Your actual authentication middleware export
+const {
+  authMiddleware,
+} = require("../middleware/authMiddleware");
 
-const { authenticateToken } = require("../middleware/authMiddleware");
+// =====================================================
+// AUTHENTICATED USER ENDPOINTS
+// =====================================================
 
-// Authenticated user endpoints
 router.post(
   "/ad-free/prepare",
-  authenticateToken,
+  authMiddleware,
   prepareReward
 );
 
 router.get(
   "/ad-free/status",
-  authenticateToken,
+  authMiddleware,
   getAdFreeStatus
 );
 
-// Public callback:
-// Google AdMob calls this endpoint, not the mobile app.
-// Its cryptographic signature must be verified by the controller.
+// =====================================================
+// PUBLIC ADMOB SERVER-SIDE VERIFICATION CALLBACK
+// =====================================================
+
 router.get(
   "/ad-free/ssv",
   handleAdMobSSV
