@@ -4,10 +4,10 @@ const pool = require("../config/db");
 const CLOUDFRONT_URL =
   "https://d1aj7yf1pvtrkq.cloudfront.net";
 
-/**
- * Convert stored S3 media URLs to CloudFront URLs.
- * Supports audio/ and covers/ object keys.
- */
+/* =========================================================
+   MEDIA URL HELPERS
+========================================================= */
+
 const getPublicMediaUrl = (mediaUrl) => {
   if (
     typeof mediaUrl !== "string" ||
@@ -21,7 +21,6 @@ const getPublicMediaUrl = (mediaUrl) => {
   try {
     const url = new URL(value);
 
-    // Convert URLs belonging to the KEERTHANA S3 bucket.
     if (
       url.hostname ===
       "keerthana-media-908209635187.s3.ap-south-1.amazonaws.com"
@@ -41,7 +40,6 @@ const getPublicMediaUrl = (mediaUrl) => {
       }
     }
 
-    // Keep existing CloudFront URLs and other URLs unchanged.
     return value;
   } catch {
     return value;
@@ -57,6 +55,114 @@ const transformSongMedia = (song) => ({
 });
 
 /* =========================================================
+   MULTIPLE ARTISTS HELPER
+
+   Reads all artists from song_artists table.
+   Does not use song_artists.id because that column
+   does not exist in your database.
+========================================================= */
+
+const attachSongArtists = async (songs) => {
+  if (!Array.isArray(songs) || songs.length === 0) {
+    return songs || [];
+  }
+
+  const songIds = songs
+    .map((song) => song.id)
+    .filter((id) => id !== null && id !== undefined);
+
+  if (songIds.length === 0) {
+    return songs.map((song) => ({
+      ...song,
+      artists: [],
+      artist_ids: [],
+      song_artists: [],
+    }));
+  }
+
+  const artistResult = await pool.query(
+    `
+      SELECT
+        sa.song_id,
+        ar.id AS artist_id,
+        ar.name,
+        NULLIF(BTRIM(ar.name_english), '') AS name_english,
+        ar.image_url
+
+      FROM public.song_artists sa
+
+      INNER JOIN public.artists ar
+        ON ar.id = sa.artist_id
+
+      INNER JOIN public.songs s
+        ON s.id = sa.song_id
+
+      WHERE sa.song_id = ANY($1)
+
+      ORDER BY
+        sa.song_id,
+        (sa.artist_id = s.artist_id) DESC,
+        ar.id ASC
+    `,
+    [songIds]
+  );
+
+  const artistsBySongId = new Map();
+
+  for (const row of artistResult.rows) {
+    const key = String(row.song_id);
+
+    const artist = {
+      id: row.artist_id,
+      artist_id: row.artist_id,
+      name: row.name || "",
+      name_english: row.name_english || "",
+      image_url: getPublicMediaUrl(row.image_url),
+    };
+
+    if (!artistsBySongId.has(key)) {
+      artistsBySongId.set(key, []);
+    }
+
+    artistsBySongId.get(key).push(artist);
+  }
+
+  return songs.map((song) => {
+    let linkedArtists =
+      artistsBySongId.get(String(song.id)) || [];
+
+    // Fallback for older songs that only have artist_id.
+    if (linkedArtists.length === 0 && song.artist_id) {
+      linkedArtists = [
+        {
+          id: song.artist_id,
+          artist_id: song.artist_id,
+          name: song.artist_name || "",
+          name_english: song.artist_name_english || "",
+          image_url: getPublicMediaUrl(song.artist_image),
+        },
+      ];
+    }
+
+    return {
+      ...song,
+
+      artists: linkedArtists,
+
+      artist_ids: linkedArtists.map(
+        (artist) => artist.id
+      ),
+
+      song_artists: linkedArtists.map((artist) => ({
+        song_id: song.id,
+        artist_id: artist.id,
+        artist,
+      })),
+    };
+  });
+};
+
+/* =========================================================
    ALLOWED MOODS
 ========================================================= */
 
@@ -69,72 +175,53 @@ const ALLOWED_MOODS = [
   "thanksgiving",
 ];
 
-
 /* =========================================================
    GET USER LANGUAGE CONDITION
 ========================================================= */
 
 const getUserLanguage = (req) => {
-
-  const role = String(
-    req.user?.role || ""
-  )
+  const role = String(req.user?.role || "")
     .trim()
     .toUpperCase();
 
-
-  /*
-    Only normal USER accounts are filtered
-    by preferred language.
-
-    ADMIN / BUSINESS_OWNER keep existing behavior.
-  */
+  // Only normal USER accounts are filtered by language.
+  // ADMIN / BUSINESS_OWNER keep existing behavior.
 
   if (role !== "USER") {
     return null;
   }
 
-
   const language = String(
     req.user?.language || ""
   ).trim();
-
 
   if (!language) {
     return null;
   }
 
-
   return language;
 };
-
 
 /* =========================================================
    VALIDATE MOOD
 ========================================================= */
 
 const validateMood = (value) => {
-
-  const mood =
-    String(value || "")
-      .trim()
-      .toLowerCase();
-
+  const mood = String(value || "")
+    .trim()
+    .toLowerCase();
 
   if (!ALLOWED_MOODS.includes(mood)) {
     return null;
   }
 
-
   return mood;
 };
 
-
-
-/* =========================================
+/* =========================================================
    GET ALL SONGS
-   Includes Artist, Album, Ministry & Category
-========================================= */
+   Includes all linked artists, album, ministry, category.
+========================================================= */
 
 const getAllSongs = async (req, res) => {
   try {
@@ -154,7 +241,7 @@ const getAllSongs = async (req, res) => {
         s.moods,
         s.created_at,
 
-        /* ARTIST */
+        /* PRIMARY ARTIST - BACKWARD COMPATIBILITY */
         s.artist_id,
         ar.name AS artist_name,
         NULLIF(BTRIM(ar.name_english), '') AS artist_name_english,
@@ -172,6 +259,7 @@ const getAllSongs = async (req, res) => {
           NULLIF(BTRIM(m.name_english), ''),
           NULLIF(BTRIM(m.name), '')
         ) AS ministry_name_english,
+
         COALESCE(
           NULLIF(BTRIM(m.name), ''),
           NULLIF(BTRIM(m.name_english), '')
@@ -180,6 +268,7 @@ const getAllSongs = async (req, res) => {
         /* CATEGORY */
         s.category_id,
         c.name AS category_name,
+
         COALESCE(
           NULLIF(BTRIM(c.name_english), ''),
           NULLIF(BTRIM(c.name), '')
@@ -215,10 +304,12 @@ const getAllSongs = async (req, res) => {
 
     const result = await pool.query(query, values);
 
+    const songs = await attachSongArtists(result.rows);
+
     return res.status(200).json({
       success: true,
-      count: result.rows.length,
-      songs: result.rows.map(transformSongMedia),
+      count: songs.length,
+      songs: songs.map(transformSongMedia),
     });
 
   } catch (error) {
@@ -231,11 +322,9 @@ const getAllSongs = async (req, res) => {
   }
 };
 
-
-/* =========================================
+/* =========================================================
    GET SONG BY ID
-========================================= */
-
+========================================================= */
 
 const getSongById = async (req, res) => {
   try {
@@ -245,20 +334,20 @@ const getSongById = async (req, res) => {
       SELECT
         s.*,
 
-        /* ARTIST - ENGLISH */
+        /* PRIMARY ARTIST */
         NULLIF(BTRIM(ar.name_english), '') AS artist_name_english,
         ar.image_url AS artist_image,
 
-        /* ALBUM - ENGLISH */
+        /* ALBUM */
         NULLIF(BTRIM(al.title_english), '') AS album_name_english,
         NULLIF(BTRIM(al.title_english), '') AS album_title_english,
         al.cover_url AS album_cover,
 
-        /* MINISTRY - ENGLISH */
+        /* MINISTRY */
         NULLIF(BTRIM(m.name_english), '') AS ministry_name_english,
         NULLIF(BTRIM(m.name_english), '') AS ministry_name,
 
-        /* CATEGORY - ENGLISH */
+        /* CATEGORY */
         NULLIF(BTRIM(c.name_english), '') AS category_name_english,
         NULLIF(BTRIM(c.name_english), '') AS category_name
 
@@ -288,9 +377,11 @@ const getSongById = async (req, res) => {
       });
     }
 
+    const songs = await attachSongArtists(result.rows);
+
     return res.status(200).json({
       success: true,
-      song: transformSongMedia(result.rows[0]),
+      song: transformSongMedia(songs[0]),
     });
 
   } catch (error) {
@@ -303,38 +394,25 @@ const getSongById = async (req, res) => {
   }
 };
 
-
-
-/* =========================================
+/* =========================================================
    SEARCH SONGS
-========================================= */
+========================================================= */
 
 const searchSongs = async (req, res) => {
-
   try {
-
-    const query =
-      String(
-        req.query.q || ""
-      ).trim();
-
+    const query = String(
+      req.query.q || ""
+    ).trim();
 
     if (!query) {
-
       return res.status(400).json({
         success: false,
         message: "Search query is required",
       });
     }
 
-
-    const searchTerm =
-      `%${query}%`;
-
-
-    const userLanguage =
-      getUserLanguage(req);
-
+    const searchTerm = `%${query}%`;
+    const userLanguage = getUserLanguage(req);
 
     let sql = `
       SELECT
@@ -352,6 +430,7 @@ const searchSongs = async (req, res) => {
 
         s.artist_id,
         ar.name AS artist_name,
+        NULLIF(BTRIM(ar.name_english), '') AS artist_name_english,
         ar.image_url AS artist_image,
 
         s.album_id,
@@ -372,34 +451,24 @@ const searchSongs = async (req, res) => {
       LEFT JOIN categories c
         ON s.category_id = c.id
 
-      WHERE
-        (
-          s.title ILIKE $1
-          OR s.title_english ILIKE $1
-          OR s.artist ILIKE $1
-          OR s.lyrics ILIKE $1
-          OR s.language ILIKE $1
-          OR ar.name ILIKE $1
-          OR al.title ILIKE $1
-          OR c.name ILIKE $1
-        )
+      WHERE (
+        s.title ILIKE $1
+        OR s.title_english ILIKE $1
+        OR s.artist ILIKE $1
+        OR s.lyrics ILIKE $1
+        OR s.language ILIKE $1
+        OR ar.name ILIKE $1
+        OR al.title ILIKE $1
+        OR c.name ILIKE $1
+      )
     `;
 
-
-    const values = [
-      searchTerm,
-    ];
-
+    const values = [searchTerm];
 
     if (userLanguage) {
-
       values.push(userLanguage);
-
-      sql += `
-        AND s.language = $2
-      `;
+      sql += ` AND s.language = $2`;
     }
-
 
     sql += `
       ORDER BY
@@ -407,28 +476,19 @@ const searchSongs = async (req, res) => {
         s.id DESC
     `;
 
+    const result = await pool.query(sql, values);
 
-    const result =
-      await pool.query(
-        sql,
-        values
-      );
-
+    const songs = await attachSongArtists(result.rows);
 
     return res.status(200).json({
       success: true,
       query,
-      count: result.rows.length,
-    songs: result.rows.map(transformSongMedia),
+      count: songs.length,
+      songs: songs.map(transformSongMedia),
     });
 
   } catch (error) {
-
-    console.error(
-      "Search songs error:",
-      error
-    );
-
+    console.error("Search songs error:", error);
 
     return res.status(500).json({
       success: false,
@@ -437,17 +497,13 @@ const searchSongs = async (req, res) => {
   }
 };
 
-
-/* =========================================================
-   GET SONGS BY MOOD
-========================================================= */
-
 /* =========================================================
    GET SONGS BY MOOD
 ========================================================= */
 
 const getSongsByMood = async (req, res) => {
   try {
+    const userLanguage = getUserLanguage(req);
     const mood = validateMood(req.params.mood);
 
     if (!mood) {
@@ -457,8 +513,6 @@ const getSongsByMood = async (req, res) => {
         allowedMoods: ALLOWED_MOODS,
       });
     }
-
-    
 
     const values = [mood];
 
@@ -478,6 +532,7 @@ const getSongsByMood = async (req, res) => {
 
         ar.id AS artist_id,
         ar.name AS artist_name,
+        NULLIF(BTRIM(ar.name_english), '') AS artist_name_english,
         ar.image_url AS artist_image,
 
         al.id AS album_id,
@@ -489,9 +544,14 @@ const getSongsByMood = async (req, res) => {
 
       FROM songs s
 
-      LEFT JOIN artists ar ON s.artist_id = ar.id
-      LEFT JOIN albums al ON s.album_id = al.id
-      LEFT JOIN categories c ON s.category_id = c.id
+      LEFT JOIN artists ar
+        ON s.artist_id = ar.id
+
+      LEFT JOIN albums al
+        ON s.album_id = al.id
+
+      LEFT JOIN categories c
+        ON s.category_id = c.id
 
       WHERE EXISTS (
         SELECT 1
@@ -513,14 +573,15 @@ const getSongsByMood = async (req, res) => {
 
     const result = await pool.query(sql, values);
 
-    const songs = result.rows.map(transformSongMedia);
+    const songs = await attachSongArtists(result.rows);
 
     return res.status(200).json({
       success: true,
       mood,
       count: songs.length,
-      songs,
+      songs: songs.map(transformSongMedia),
     });
+
   } catch (error) {
     console.error("Get songs by mood error:", error);
 
@@ -531,19 +592,13 @@ const getSongsByMood = async (req, res) => {
   }
 };
 
-
-
-/* =========================================================
-   BROWSE ALL SONGS FOR MOOD
-========================================================= */
-
-
 /* =========================================================
    BROWSE ALL SONGS FOR MOOD
 ========================================================= */
 
 const browseSongsForMood = async (req, res) => {
   try {
+    const userLanguage = getUserLanguage(req);
     const mood = validateMood(req.params.mood);
 
     if (!mood) {
@@ -554,7 +609,6 @@ const browseSongsForMood = async (req, res) => {
       });
     }
 
-    
     const values = [mood];
 
     let sql = `
@@ -570,12 +624,16 @@ const browseSongsForMood = async (req, res) => {
         s.moods,
         s.created_at,
 
+        s.artist_id,
         ar.name AS artist_name,
+        NULLIF(BTRIM(ar.name_english), '') AS artist_name_english,
         ar.image_url AS artist_image,
 
+        s.album_id,
         al.title AS album_title,
         al.cover_url AS album_cover,
 
+        s.category_id,
         c.name AS category_name,
 
         EXISTS (
@@ -588,9 +646,14 @@ const browseSongsForMood = async (req, res) => {
 
       FROM songs s
 
-      LEFT JOIN artists ar ON s.artist_id = ar.id
-      LEFT JOIN albums al ON s.album_id = al.id
-      LEFT JOIN categories c ON s.category_id = c.id
+      LEFT JOIN artists ar
+        ON s.artist_id = ar.id
+
+      LEFT JOIN albums al
+        ON s.album_id = al.id
+
+      LEFT JOIN categories c
+        ON s.category_id = c.id
     `;
 
     if (userLanguage) {
@@ -603,14 +666,16 @@ const browseSongsForMood = async (req, res) => {
     `;
 
     const result = await pool.query(sql, values);
-    const songs = result.rows.map(transformSongMedia);
+
+    const songs = await attachSongArtists(result.rows);
 
     return res.status(200).json({
       success: true,
       mood,
       count: songs.length,
-      songs,
+      songs: songs.map(transformSongMedia),
     });
+
   } catch (error) {
     console.error("Browse songs for mood error:", error);
 
@@ -621,44 +686,23 @@ const browseSongsForMood = async (req, res) => {
   }
 };
 
-
-
 /* =========================================================
    ADD SONG TO MOOD
 ========================================================= */
 
 const addSongToMood = async (req, res) => {
-
   try {
-
-    /*
-      This operation changes the database.
-
-      Therefore the user must be logged in.
-    */
-
     if (!req.user) {
-
       return res.status(401).json({
         success: false,
         message: "Authentication required",
       });
     }
 
-
-    const {
-      id,
-    } = req.params;
-
-
-    const mood =
-      validateMood(
-        req.body?.mood
-      );
-
+    const { id } = req.params;
+    const mood = validateMood(req.body?.mood);
 
     if (!mood) {
-
       return res.status(400).json({
         success: false,
         message: "Invalid mood",
@@ -666,58 +710,36 @@ const addSongToMood = async (req, res) => {
       });
     }
 
-
-    const result =
-      await pool.query(
-        `
+    const result = await pool.query(
+      `
         UPDATE songs
 
         SET moods =
           CASE
             WHEN $1 = ANY(
-              COALESCE(
-                moods,
-                ARRAY[]::text[]
-              )
+              COALESCE(moods, ARRAY[]::text[])
             )
-            THEN COALESCE(
-              moods,
-              ARRAY[]::text[]
-            )
+            THEN COALESCE(moods, ARRAY[]::text[])
 
             ELSE array_append(
-              COALESCE(
-                moods,
-                ARRAY[]::text[]
-              ),
+              COALESCE(moods, ARRAY[]::text[]),
               $1
             )
           END
 
         WHERE id = $2
 
-        RETURNING
-          id,
-          title,
-          moods
-        `,
-        [
-          mood,
-          id,
-        ]
-      );
+        RETURNING id, title, moods
+      `,
+      [mood, id]
+    );
 
-
-    if (
-      result.rows.length === 0
-    ) {
-
+    if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: "Song not found",
       });
     }
-
 
     return res.status(200).json({
       success: true,
@@ -726,12 +748,7 @@ const addSongToMood = async (req, res) => {
     });
 
   } catch (error) {
-
-    console.error(
-      "Add song to mood error:",
-      error
-    );
-
+    console.error("Add song to mood error:", error);
 
     return res.status(500).json({
       success: false,
@@ -740,38 +757,27 @@ const addSongToMood = async (req, res) => {
   }
 };
 
-
 /* =========================================================
    REMOVE SONG FROM MOOD
 ========================================================= */
 
 const removeSongFromMood = async (req, res) => {
-
   try {
-
     if (!req.user) {
-
       return res.status(401).json({
         success: false,
         message: "Authentication required",
       });
     }
 
-
     const {
       id,
       mood: moodParam,
     } = req.params;
 
-
-    const mood =
-      validateMood(
-        moodParam
-      );
-
+    const mood = validateMood(moodParam);
 
     if (!mood) {
-
       return res.status(400).json({
         success: false,
         message: "Invalid mood",
@@ -779,45 +785,28 @@ const removeSongFromMood = async (req, res) => {
       });
     }
 
-
-    const result =
-      await pool.query(
-        `
+    const result = await pool.query(
+      `
         UPDATE songs
 
-        SET moods =
-          array_remove(
-            COALESCE(
-              moods,
-              ARRAY[]::text[]
-            ),
-            $1
-          )
+        SET moods = array_remove(
+          COALESCE(moods, ARRAY[]::text[]),
+          $1
+        )
 
         WHERE id = $2
 
-        RETURNING
-          id,
-          title,
-          moods
-        `,
-        [
-          mood,
-          id,
-        ]
-      );
+        RETURNING id, title, moods
+      `,
+      [mood, id]
+    );
 
-
-    if (
-      result.rows.length === 0
-    ) {
-
+    if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: "Song not found",
       });
     }
-
 
     return res.status(200).json({
       success: true,
@@ -826,26 +815,14 @@ const removeSongFromMood = async (req, res) => {
     });
 
   } catch (error) {
-
-    console.error(
-      "Remove song from mood error:",
-      error
-    );
-
+    console.error("Remove song from mood error:", error);
 
     return res.status(500).json({
       success: false,
-      message:
-        "Unable to remove song from mood",
+      message: "Unable to remove song from mood",
     });
   }
 };
-
-
-/* =========================================================
-   GET AVAILABLE MOODS
-========================================================= */
-
 
 /* =========================================================
    GET AVAILABLE MOODS
@@ -853,7 +830,7 @@ const removeSongFromMood = async (req, res) => {
 
 const getAvailableMoods = async (req, res) => {
   try {
-   
+    const userLanguage = getUserLanguage(req);
     const values = [];
 
     let sql = `
@@ -895,6 +872,7 @@ const getAvailableMoods = async (req, res) => {
       success: true,
       moods,
     });
+
   } catch (error) {
     console.error("Get available moods error:", error);
 
@@ -905,29 +883,17 @@ const getAvailableMoods = async (req, res) => {
   }
 };
 
-
-
 /* =========================================================
    EXPORTS
 ========================================================= */
 
 module.exports = {
-
   getAllSongs,
-
   getSongById,
-
   searchSongs,
-
   getSongsByMood,
-
   browseSongsForMood,
-
   addSongToMood,
-
   removeSongFromMood,
-
   getAvailableMoods,
-
 };
-
