@@ -1048,12 +1048,14 @@ const updateSong = async (req, res) => {
         // are not included in the update request.
         const existingArtistsResult = await pool.query(
           `
-          SELECT artist_id
-          FROM song_artists
-          WHERE song_id = $1
-          ORDER BY
-            CASE WHEN artist_id = $2 THEN 0 ELSE 1 END,
-            id ASC
+          
+SELECT artist_id
+FROM song_artists
+WHERE song_id = $1
+ORDER BY
+  CASE WHEN artist_id = $2 THEN 0 ELSE 1 END,
+  artist_id ASC
+
           `,
           [id, existingSong.artist_id]
         );
